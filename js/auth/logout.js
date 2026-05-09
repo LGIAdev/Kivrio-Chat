@@ -20,8 +20,8 @@ function ensureOverlay() {
   overlay.innerHTML = ''
     + '<div class="login-splash" role="document">'
     + '  <div class="login-card">'
-    + '    <div class="login-brand">Kivrio Agent UI</div>'
-    + '    <div id="login-title" class="login-title">Connectez-vous a Kivrio Agent UI</div>'
+    + '    <div class="login-brand">Kivrio Chat</div>'
+    + '    <div id="login-title" class="login-title">Connectez-vous a Kivrio Chat</div>'
     + '    <p id="login-hint" class="login-hint" hidden></p>'
     + '    <form id="login-form" class="login-form">'
     + '      <div class="login-field">'
@@ -63,13 +63,13 @@ function applyOverlayMode() {
   const button = document.getElementById('login-btn');
 
   if (title) {
-    title.textContent = setupRequired ? 'Creez votre mot de passe Kivrio Agent UI' : 'Connectez-vous a Kivrio Agent UI';
+    title.textContent = setupRequired ? 'Creez votre mot de passe Kivrio Chat' : 'Connectez-vous a Kivrio Chat';
   }
 
   if (hint) {
     hint.hidden = !setupRequired;
     hint.textContent = setupRequired
-      ? 'Premier lancement: choisissez un mot de passe personnel pour proteger Kivrio Agent UI sur cet appareil.'
+      ? 'Premier lancement: choisissez un mot de passe personnel pour proteger Kivrio Chat sur cet appareil.'
       : '';
   }
 

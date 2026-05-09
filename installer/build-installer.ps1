@@ -5,7 +5,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-function Copy-KivrioAgentUiItem {
+function Copy-KivrioChatItem {
     param(
         [Parameter(Mandatory = $true)]
         [string]$SourcePath,
@@ -101,17 +101,17 @@ $outputRoot = [System.IO.Path]::GetFullPath($OutputDir)
 $buildRoot = Join-Path $outputRoot 'build'
 $packageRoot = Join-Path $buildRoot 'package\app'
 $installerBuildRoot = Join-Path $buildRoot 'installer'
-$zipPath = Join-Path $installerBuildRoot 'kivrio-agent-ui-package.zip'
-$targetExe = Join-Path $outputRoot 'Kivrio-Agent-UI-Setup.exe'
-$stubExe = Join-Path $installerBuildRoot 'Kivrio-Agent-UI-Setup.stub.exe'
-$iconPath = Join-Path $projectRoot 'assets\kivrio-agent-ui.ico'
-$installerStub = Join-Path $projectRoot 'installer\KivrioAgentUiSetupStub.cs'
-$serverSource = Join-Path $projectRoot 'server\KivrioAgentUiServer.cs'
-$serverExe = Join-Path $packageRoot 'bin\kivrio-agent-ui-server.exe'
+$zipPath = Join-Path $installerBuildRoot 'kivrio-chat-package.zip'
+$targetExe = Join-Path $outputRoot 'Kivrio-Chat-Setup.exe'
+$stubExe = Join-Path $installerBuildRoot 'Kivrio-Chat-Setup.stub.exe'
+$iconPath = Join-Path $projectRoot 'assets\kivrio-chat.ico'
+$installerStub = Join-Path $projectRoot 'installer\KivrioChatSetupStub.cs'
+$serverSource = Join-Path $projectRoot 'server\KivrioChatServer.cs'
+$serverExe = Join-Path $packageRoot 'bin\kivrio-chat-server.exe'
 $csharpCompiler = Get-CSharpCompiler
 
 if (-not (Test-Path -LiteralPath $iconPath)) {
-    throw "Icone Kivrio Agent UI introuvable: $iconPath"
+    throw "Icone Kivrio Chat introuvable: $iconPath"
 }
 
 if (-not (Test-Path -LiteralPath $serverSource)) {
@@ -137,13 +137,13 @@ $itemsToCopy = @(
     'LICENSE',
     'CODE_OF_CONDUCT.md',
     'CONTRIBUTING.md',
-    'start-kivrio-agent-ui.bat',
-    'start-kivrio-agent-ui-hidden.vbs',
+    'start-kivrio-chat.bat',
+    'start-kivrio-chat-hidden.vbs',
     'start_localhost.bat'
 )
 
 foreach ($item in $itemsToCopy) {
-    Copy-KivrioAgentUiItem `
+    Copy-KivrioChatItem `
         -SourcePath (Join-Path $projectRoot $item) `
         -DestinationPath (Join-Path $packageRoot $item)
 }
@@ -162,7 +162,7 @@ $serverCompilerArgs = @(
 
 & $csharpCompiler @serverCompilerArgs
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $serverExe)) {
-    throw 'La compilation du serveur autonome Kivrio Agent UI a echoue.'
+    throw 'La compilation du serveur autonome Kivrio Chat a echoue.'
 }
 
 if (Test-Path -LiteralPath $zipPath) {
@@ -193,7 +193,7 @@ $compilerArgs = @(
 
 & $csharpCompiler @compilerArgs
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $stubExe)) {
-    throw 'La compilation de l installeur Windows Kivrio Agent UI a echoue.'
+    throw 'La compilation de l installeur Windows Kivrio Chat a echoue.'
 }
 
 Copy-Item -LiteralPath $stubExe -Destination $targetExe -Force

@@ -1,20 +1,26 @@
-# Kivrio Agent UI
+# Kivrio Chat
 
 ![Status](https://img.shields.io/badge/status-WIP-blue)
 ![License](https://img.shields.io/badge/license-Apache--2.0%20%2F%20MPL--2.0-green)
 
-Kivrio Agent UI is a local interface for using Codex CLI more comfortably with local models via [Ollama](https://ollama.com/).
+Kivrio Chat is a local interface for using Codex CLI more comfortably with local models via [Ollama](https://ollama.com/).
 It provides a desktop-style web UI with math rendering, local conversation history, and a fully local persistence layer.
 
 Status: project under active development.
-Version: Kivrio Agent UI 2026.5.1.
+Version: Kivrio Chat 2026.5.9.
+
+---
+
+## Releases
+
+- [Kivrio Chat 2026.5.9](releases/Kivrio-Chat-2026.5.9.md)
 
 ---
 
 ## Project status
 
-Kivrio Agent UI is currently being rebuilt as a separate local interface.
-Standalone release notes will be added when the first dedicated Agent UI package is produced.
+Kivrio Chat is currently being rebuilt as a separate local interface.
+Standalone release notes are now maintained for Kivrio Chat releases.
 
 ---
 
@@ -34,17 +40,17 @@ Standalone release notes will be added when the first dedicated Agent UI package
 
 ## Local architecture
 
-Kivrio Agent UI now runs as a local application made of:
+Kivrio Chat now runs as a local application made of:
 
 - a local autonomous Windows server
 - a local JSON conversation store
 - a browser UI served from the same local server
-- local Ollama models running outside Kivrio Agent UI
+- local Ollama models running outside Kivrio Chat
 - direct file reading for supported multimodal models
 
 Conversation data is stored locally in:
 
-`data/kivrio-agent-ui.json`
+`data/kivrio-chat.json`
 
 No cloud database is used for conversation history.
 
@@ -57,33 +63,33 @@ No cloud database is used for conversation history.
 Run:
 
 ```powershell
-.\start-kivrio-agent-ui.bat
+.\start-kivrio-chat.bat
 ```
 
 Then open:
 
-[http://127.0.0.1:8000/index.html](http://127.0.0.1:8000/index.html)
+[http://127.0.0.1:8020/index.html](http://127.0.0.1:8020/index.html)
 
 ### Manual start
 
 ```powershell
-cd "$env:USERPROFILE\Documents\Kivrio Agent UI"
-.\bin\kivrio-agent-ui-server.exe --root . --host 127.0.0.1 --port 8000
+cd "$env:USERPROFILE\Documents\Kivrio Chat"
+.\bin\kivrio-chat-server.exe --root . --host 127.0.0.1 --port 8020
 ```
 
 Then open:
 
-[http://127.0.0.1:8000/index.html](http://127.0.0.1:8000/index.html)
+[http://127.0.0.1:8020/index.html](http://127.0.0.1:8020/index.html)
 
 Make sure Ollama is installed locally and running, for example on:
 
 `http://127.0.0.1:11434`
 
-For image files, Kivrio Agent UI keeps file upload support for compatible multimodal models.
+For image files, Kivrio Chat keeps file upload support for compatible multimodal models.
 
 ### Authentication
 
-Kivrio Agent UI currently runs as a local-only interface on `127.0.0.1`.
+Kivrio Chat currently runs as a local-only interface on `127.0.0.1`.
 The autonomous backend protects local API routes with session-based authentication.
 
 On first launch, the interface can create a local password stored in:
@@ -101,7 +107,7 @@ Advanced local configuration keeps the Kivrio-compatible environment variables:
 
 ## Conversation history
 
-Kivrio Agent UI stores conversations locally in a JSON store and rebuilds the left sidebar from that file at startup.
+Kivrio Chat stores conversations locally in a JSON store and rebuilds the left sidebar from that file at startup.
 
 Supported behavior:
 
@@ -121,8 +127,8 @@ Logging out of the interface no longer clears persistent conversation history.
 - `js/`: frontend logic
 - `server/`: local API server source
 - `css/`: styles
-- `bin/kivrio-agent-ui-server.exe`: compiled local server, generated on demand or during packaging
-- `data/kivrio-agent-ui.json`: local conversation store
+- `bin/kivrio-chat-server.exe`: compiled local server, generated on demand or during packaging
+- `data/kivrio-chat.json`: local conversation store
 
 ---
 
@@ -164,7 +170,7 @@ See `LICENSE`.
 
 ## Trademark notice
 
-Kivrio Agent UI is derived from the Kivrio interface. References to Kivrio are kept for attribution, compatibility, and migration context.
+Kivrio Chat is derived from the Kivrio interface. References to Kivrio are kept for attribution, compatibility, and migration context.
 
 The name Kivrio, its logo, and its visual identity are trademarks of LG-IA ResearcherLab.
 

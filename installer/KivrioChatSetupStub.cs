@@ -7,7 +7,7 @@ using System.IO.Compression;
 using System.Linq;
 using System.Windows.Forms;
 
-namespace KivrioAgentUiInstaller
+namespace KivrioChatInstaller
 {
     internal static class Program
     {
@@ -32,12 +32,12 @@ namespace KivrioAgentUiInstaller
 
                 string exePath = Application.ExecutablePath;
                 string extractRoot = Path.Combine(Path.GetTempPath(), "KV");
-                string zipPath = Path.Combine(extractRoot, "kivrio-agent-ui-package.zip");
-                installDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Kivrio Agent UI");
+                string zipPath = Path.Combine(extractRoot, "kivrio-chat-package.zip");
+                installDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Kivrio Chat");
                 backupInstallDir = installDir + ".previous";
                 string startMenuDir = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                    @"Microsoft\Windows\Start Menu\Programs\Kivrio Agent UI"
+                    @"Microsoft\Windows\Start Menu\Programs\Kivrio Chat"
                 );
 
                 TryDeleteDirectory(extractRoot);
@@ -50,7 +50,7 @@ namespace KivrioAgentUiInstaller
                 string packageRoot = Path.Combine(extractRoot, "app");
                 if (!Directory.Exists(packageRoot))
                 {
-                    throw new InvalidOperationException("Le package Kivrio Agent UI est invalide: dossier app introuvable.");
+                    throw new InvalidOperationException("Le package Kivrio Chat est invalide: dossier app introuvable.");
                 }
 
                 TryDeleteDirectory(backupInstallDir);
@@ -65,23 +65,23 @@ namespace KivrioAgentUiInstaller
                 Directory.CreateDirectory(Path.Combine(installDir, "data"));
                 Directory.CreateDirectory(Path.Combine(installDir, "data", "uploads"));
 
-                string iconPath = Path.Combine(installDir, "assets", "kivrio-agent-ui.ico");
+                string iconPath = Path.Combine(installDir, "assets", "kivrio-chat.ico");
                 if (!File.Exists(iconPath))
                 {
-                    throw new InvalidOperationException("Icone Kivrio Agent UI introuvable apres installation.");
+                    throw new InvalidOperationException("Icone Kivrio Chat introuvable apres installation.");
                 }
 
                 string desktopShortcut = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
-                    "Kivrio Agent UI.lnk"
+                    "Kivrio Chat.lnk"
                 );
-                string startMenuShortcut = Path.Combine(startMenuDir, "Kivrio Agent UI.lnk");
+                string startMenuShortcut = Path.Combine(startMenuDir, "Kivrio Chat.lnk");
                 CreateShortcut(desktopShortcut, installDir, iconPath);
                 CreateShortcut(startMenuShortcut, installDir, iconPath);
 
                 progress.SetLaunching();
 
-                string launcher = Path.Combine(installDir, "start-kivrio-agent-ui-hidden.vbs");
+                string launcher = Path.Combine(installDir, "start-kivrio-chat-hidden.vbs");
                 Process.Start(
                     new ProcessStartInfo
                     {
@@ -99,8 +99,8 @@ namespace KivrioAgentUiInstaller
                 progress = null;
 
                 MessageBox.Show(
-                    "Kivrio Agent UI a ete installe dans AppData\\Local\\Kivrio Agent UI et un raccourci Bureau a ete cree.",
-                    "Installation Kivrio Agent UI",
+                    "Kivrio Chat a ete installe dans AppData\\Local\\Kivrio Chat et un raccourci Bureau a ete cree.",
+                    "Installation Kivrio Chat",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information
                 );
@@ -122,7 +122,7 @@ namespace KivrioAgentUiInstaller
 
                 TryRestorePreviousInstallation(installDir, backupInstallDir);
 
-                string errorPath = Path.Combine(Path.GetTempPath(), "kivrio-agent-ui-installer-error.txt");
+                string errorPath = Path.Combine(Path.GetTempPath(), "kivrio-chat-installer-error.txt");
                 try
                 {
                     File.WriteAllText(errorPath, ex.ToString());
@@ -133,7 +133,7 @@ namespace KivrioAgentUiInstaller
 
                 MessageBox.Show(
                     ex.Message + Environment.NewLine + Environment.NewLine + "Details: " + errorPath,
-                    "Installation Kivrio Agent UI impossible",
+                    "Installation Kivrio Chat impossible",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error
                 );
@@ -163,7 +163,7 @@ namespace KivrioAgentUiInstaller
             {
                 if (stream.Length <= FooterSize)
                 {
-                    throw new InvalidOperationException("Payload Kivrio Agent UI introuvable dans l'installeur.");
+                    throw new InvalidOperationException("Payload Kivrio Chat introuvable dans l'installeur.");
                 }
 
                 stream.Seek(-FooterSize, SeekOrigin.End);
@@ -173,14 +173,14 @@ namespace KivrioAgentUiInstaller
                 byte[] magic = footer.Take(8).ToArray();
                 if (!magic.SequenceEqual(PayloadMagic))
                 {
-                    throw new InvalidOperationException("Signature du package Kivrio Agent UI invalide.");
+                    throw new InvalidOperationException("Signature du package Kivrio Chat invalide.");
                 }
 
                 long payloadLength = BitConverter.ToInt64(footer, 8);
                 long payloadStart = stream.Length - FooterSize - payloadLength;
                 if (payloadLength <= 0 || payloadStart < 0)
                 {
-                    throw new InvalidOperationException("Longueur du package Kivrio Agent UI invalide.");
+                    throw new InvalidOperationException("Longueur du package Kivrio Chat invalide.");
                 }
 
                 stream.Seek(payloadStart, SeekOrigin.Begin);
@@ -193,7 +193,7 @@ namespace KivrioAgentUiInstaller
                         int read = stream.Read(buffer, 0, (int)Math.Min(buffer.Length, remaining));
                         if (read <= 0)
                         {
-                            throw new EndOfStreamException("Lecture incomplete du package Kivrio Agent UI.");
+                            throw new EndOfStreamException("Lecture incomplete du package Kivrio Chat.");
                         }
 
                         output.Write(buffer, 0, read);
@@ -252,7 +252,7 @@ namespace KivrioAgentUiInstaller
             dynamic shell = Activator.CreateInstance(shellType);
             dynamic shortcut = shell.CreateShortcut(shortcutPath);
             shortcut.TargetPath = Path.Combine(Environment.SystemDirectory, "wscript.exe");
-            shortcut.Arguments = "\"" + Path.Combine(installDir, "start-kivrio-agent-ui-hidden.vbs") + "\"";
+            shortcut.Arguments = "\"" + Path.Combine(installDir, "start-kivrio-chat-hidden.vbs") + "\"";
             shortcut.WorkingDirectory = installDir;
             shortcut.IconLocation = iconPath;
             shortcut.Save();
@@ -282,7 +282,7 @@ namespace KivrioAgentUiInstaller
             public InstallProgressForm()
             {
                 Font = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
-                Text = "Installation de Kivrio Agent UI";
+                Text = "Installation de Kivrio Chat";
                 StartPosition = FormStartPosition.CenterScreen;
                 FormBorderStyle = FormBorderStyle.FixedDialog;
                 MaximizeBox = false;
@@ -404,15 +404,15 @@ namespace KivrioAgentUiInstaller
 
                 _validationStep = new StepRow(
                     "Validation de l'installateur",
-                    "Le programme d'installation Kivrio Agent UI a ete autorise et demarre."
+                    "Le programme d'installation Kivrio Chat a ete autorise et demarre."
                 );
                 _copyStep = new StepRow(
-                    "Copie des fichiers Kivrio Agent UI",
-                    "Les composants locaux de Kivrio Agent UI sont en cours de preparation."
+                    "Copie des fichiers Kivrio Chat",
+                    "Les composants locaux de Kivrio Chat sont en cours de preparation."
                 );
                 _launchStep = new StepRow(
-                    "Lancement de Kivrio Agent UI",
-                    "Kivrio Agent UI s'ouvrira automatiquement des que l'installation sera prete."
+                    "Lancement de Kivrio Chat",
+                    "Kivrio Chat s'ouvrira automatiquement des que l'installation sera prete."
                 );
 
                 stepsLayout.Controls.Add(_validationStep);
@@ -492,7 +492,7 @@ namespace KivrioAgentUiInstaller
 
             public void SetLaunching()
             {
-                _statusValue.Text = "Lancement de Kivrio Agent UI...";
+                _statusValue.Text = "Lancement de Kivrio Chat...";
                 _validationStep.SetState(StepState.Done, "OK");
                 _copyStep.SetState(StepState.Done, "OK");
                 _launchStep.SetState(StepState.Active, "3");
@@ -541,7 +541,7 @@ namespace KivrioAgentUiInstaller
                 var heading = new Label
                 {
                     AutoSize = true,
-                    Text = "Kivrio Agent UI s'installe sur votre PC",
+                    Text = "Kivrio Chat s'installe sur votre PC",
                     Font = new Font("Segoe UI", 20F, FontStyle.Bold, GraphicsUnit.Point),
                     ForeColor = Color.FromArgb(31, 31, 31),
                     Margin = new Padding(0, 2, 0, 8),
@@ -552,7 +552,7 @@ namespace KivrioAgentUiInstaller
                 {
                     AutoSize = true,
                     MaximumSize = new Size(460, 0),
-                    Text = "Merci de patienter pendant la preparation de l'application. Kivrio Agent UI se lancera automatiquement des que l'installation sera terminee.",
+                    Text = "Merci de patienter pendant la preparation de l'application. Kivrio Chat se lancera automatiquement des que l'installation sera terminee.",
                     Font = new Font("Segoe UI", 10F, FontStyle.Regular, GraphicsUnit.Point),
                     ForeColor = Color.FromArgb(93, 93, 93),
                     Margin = new Padding(0),

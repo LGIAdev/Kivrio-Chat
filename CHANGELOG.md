@@ -1,11 +1,11 @@
 # Changelog
 
-All notable changes to Kivrio Agent UI are documented in this file.
+All notable changes to Kivrio Chat are documented in this file.
 
 ## [Unreleased] - 2026-05-01
 
 ### Changed
-- Reframed the active documentation around Kivrio Agent UI instead of the old Kivrio release history.
+- Reframed the active documentation around Kivrio Chat instead of the old Kivrio release history.
 - Kept the existing chat UX while restoring local session authentication in the autonomous C# server.
 - Kept the current Ollama-facing frontend while the Codex CLI bridge is still under construction.
 

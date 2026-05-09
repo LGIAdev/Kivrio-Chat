@@ -6,7 +6,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-function Join-KivrioAgentUiPackageParts {
+function Join-KivrioChatPackageParts {
     param(
         [Parameter(Mandatory = $true)]
         [string]$SourceDir,
@@ -14,11 +14,11 @@ function Join-KivrioAgentUiPackageParts {
         [string]$DestinationZip
     )
 
-    $parts = Get-ChildItem -Path $SourceDir -Filter 'kivrio-agent-ui-package.zip.part*' | Sort-Object Name
+    $parts = Get-ChildItem -Path $SourceDir -Filter 'kivrio-chat-package.zip.part*' | Sort-Object Name
     if (-not $parts) {
-        $singleZip = Join-Path $SourceDir 'kivrio-agent-ui-package.zip'
+        $singleZip = Join-Path $SourceDir 'kivrio-chat-package.zip'
         if (-not (Test-Path -LiteralPath $singleZip)) {
-            throw "Archive Kivrio Agent UI introuvable dans $SourceDir."
+            throw "Archive Kivrio Chat introuvable dans $SourceDir."
         }
         Copy-Item -LiteralPath $singleZip -Destination $DestinationZip -Force
         return
@@ -44,7 +44,7 @@ function Join-KivrioAgentUiPackageParts {
     }
 }
 
-function New-KivrioAgentUiShortcut {
+function New-KivrioChatShortcut {
     param(
         [Parameter(Mandatory = $true)]
         [string]$ShortcutPath,
@@ -57,19 +57,19 @@ function New-KivrioAgentUiShortcut {
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut($ShortcutPath)
     $shortcut.TargetPath = Join-Path $env:WINDIR 'System32\wscript.exe'
-    $shortcut.Arguments = '"' + (Join-Path $InstallDir 'start-kivrio-agent-ui-hidden.vbs') + '"'
+    $shortcut.Arguments = '"' + (Join-Path $InstallDir 'start-kivrio-chat-hidden.vbs') + '"'
     $shortcut.WorkingDirectory = $InstallDir
     $shortcut.IconLocation = $IconPath
     $shortcut.Save()
 }
 
 $scriptRoot = (Resolve-Path $PackageDir).Path
-$installDir = Join-Path $env:LOCALAPPDATA 'Kivrio Agent UI'
-$desktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Kivrio Agent UI.lnk'
-$startMenuDir = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Kivrio Agent UI'
-$startMenuShortcut = Join-Path $startMenuDir 'Kivrio Agent UI.lnk'
-$extractRoot = Join-Path $env:TEMP ('kivrio-agent-ui-install-' + [guid]::NewGuid().ToString('N'))
-$resolvedZip = Join-Path $extractRoot 'kivrio-agent-ui-package.zip'
+$installDir = Join-Path $env:LOCALAPPDATA 'Kivrio Chat'
+$desktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Kivrio Chat.lnk'
+$startMenuDir = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Kivrio Chat'
+$startMenuShortcut = Join-Path $startMenuDir 'Kivrio Chat.lnk'
+$extractRoot = Join-Path $env:TEMP ('kivrio-chat-install-' + [guid]::NewGuid().ToString('N'))
+$resolvedZip = Join-Path $extractRoot 'kivrio-chat-package.zip'
 $packageRoot = Join-Path $extractRoot 'app'
 
 try {
@@ -77,15 +77,15 @@ try {
     New-Item -ItemType Directory -Path $startMenuDir -Force | Out-Null
     New-Item -ItemType Directory -Path $extractRoot -Force | Out-Null
 
-    Join-KivrioAgentUiPackageParts -SourceDir $scriptRoot -DestinationZip $resolvedZip
+    Join-KivrioChatPackageParts -SourceDir $scriptRoot -DestinationZip $resolvedZip
     Expand-Archive -Path $resolvedZip -DestinationPath $extractRoot -Force
     if (-not (Test-Path -LiteralPath $packageRoot)) {
-        throw "Le package Kivrio Agent UI est invalide: dossier app introuvable."
+        throw "Le package Kivrio Chat est invalide: dossier app introuvable."
     }
 
     $null = robocopy $packageRoot $installDir /E /R:2 /W:1 /NFL /NDL /NJH /NJS /NP
     if ($LASTEXITCODE -ge 8) {
-        throw "La copie des fichiers Kivrio Agent UI a echoue (code $LASTEXITCODE)."
+        throw "La copie des fichiers Kivrio Chat a echoue (code $LASTEXITCODE)."
     }
 
     $dataDir = Join-Path $installDir 'data'
@@ -93,15 +93,15 @@ try {
     New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
     New-Item -ItemType Directory -Path $uploadsDir -Force | Out-Null
 
-    $iconPath = Join-Path $installDir 'assets\kivrio-agent-ui.ico'
+    $iconPath = Join-Path $installDir 'assets\kivrio-chat.ico'
     if (-not (Test-Path -LiteralPath $iconPath)) {
-        throw "Icone Kivrio Agent UI introuvable apres installation."
+        throw "Icone Kivrio Chat introuvable apres installation."
     }
 
-    New-KivrioAgentUiShortcut -ShortcutPath $desktopShortcut -InstallDir $installDir -IconPath $iconPath
-    New-KivrioAgentUiShortcut -ShortcutPath $startMenuShortcut -InstallDir $installDir -IconPath $iconPath
+    New-KivrioChatShortcut -ShortcutPath $desktopShortcut -InstallDir $installDir -IconPath $iconPath
+    New-KivrioChatShortcut -ShortcutPath $startMenuShortcut -InstallDir $installDir -IconPath $iconPath
 
-    Start-Process -FilePath (Join-Path $env:WINDIR 'System32\wscript.exe') -ArgumentList @('"' + (Join-Path $installDir 'start-kivrio-agent-ui-hidden.vbs') + '"')
+    Start-Process -FilePath (Join-Path $env:WINDIR 'System32\wscript.exe') -ArgumentList @('"' + (Join-Path $installDir 'start-kivrio-chat-hidden.vbs') + '"')
 }
 finally {
     if (Test-Path -LiteralPath $extractRoot) {

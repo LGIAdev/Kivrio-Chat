@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -8,7 +9,7 @@ using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
 
-namespace KivrioAgentUi
+namespace KivrioChat
 {
     internal static class Program
     {
@@ -16,14 +17,14 @@ namespace KivrioAgentUi
         {
             string root = null;
             string host = "127.0.0.1";
-            int port = 8000;
+            int port = 8020;
 
             for (int i = 0; i < args.Length; i++)
             {
                 string arg = args[i] ?? "";
                 if (arg == "--help" || arg == "-h")
                 {
-                    Console.WriteLine("usage: kivrio-agent-ui-server.exe [--root ROOT] [--host HOST] [--port PORT]");
+                    Console.WriteLine("usage: kivrio-chat-server.exe [--root ROOT] [--host HOST] [--port PORT]");
                     return 0;
                 }
                 if (arg == "--root" && i + 1 < args.Length)
@@ -45,7 +46,7 @@ namespace KivrioAgentUi
 
             if (port <= 0)
             {
-                port = 8000;
+                port = 8020;
             }
 
             if (string.IsNullOrWhiteSpace(root))
@@ -56,7 +57,7 @@ namespace KivrioAgentUi
 
             root = Path.GetFullPath(root);
             var server = new LocalServer(root, host, port);
-            Console.WriteLine("Kivrio Agent UI server running on http://" + host + ":" + port + "/index.html");
+            Console.WriteLine("Kivrio Chat server running on http://" + host + ":" + port + "/index.html");
             Console.WriteLine("Application root: " + root);
             server.Run();
             return 0;
@@ -80,6 +81,7 @@ namespace KivrioAgentUi
         private readonly bool _sessionCookieSecure;
         private readonly int _sessionTtlSeconds;
         private readonly string _configuredAdminPassword;
+        private readonly CodexAgentBridge _agentBridge;
         private readonly object _sessionsLock = new object();
         private readonly Dictionary<string, DateTime> _sessions = new Dictionary<string, DateTime>();
 
@@ -95,6 +97,9 @@ namespace KivrioAgentUi
             _sessionCookieSecure = EnvFlag("KIVRO_COOKIE_SECURE", false);
             _sessionTtlSeconds = Math.Max(300, ReadIntEnv("KIVRO_SESSION_TTL_SECONDS", 43200));
             _configuredAdminPassword = (Environment.GetEnvironmentVariable("KIVRO_ADMIN_PASSWORD") ?? "").Trim();
+            _agentBridge = new CodexAgentBridge(root);
+            _agentBridge.StartInBackground();
+            AppDomain.CurrentDomain.ProcessExit += delegate { _agentBridge.Stop(); };
         }
 
         public void Run()
@@ -162,7 +167,7 @@ namespace KivrioAgentUi
 
             if (method == "GET" && path == "/api/health")
             {
-                return Json(new Dictionary<string, object> { { "ok", true }, { "store", "json" } });
+                return Json(new Dictionary<string, object> { { "ok", true }, { "app", "kivrio-chat" }, { "title", "Kivrio Chat" }, { "store", "json" } });
             }
 
             if (method == "GET" && path == "/api/auth/status")
@@ -230,6 +235,11 @@ namespace KivrioAgentUi
             if (!IsAuthenticated(request))
             {
                 return JsonError(HttpStatusCode.Unauthorized, "Authentication required.");
+            }
+
+            if (method == "GET" && path == "/api/agent/status")
+            {
+                return Json(_agentBridge.Status(true));
             }
 
             if (method == "GET" && path == "/api/system-prompt")
@@ -945,6 +955,360 @@ namespace KivrioAgentUi
         }
     }
 
+    internal sealed class CodexAgentBridge
+    {
+        private const int DefaultPort = 17655;
+        private const int MaxPortScan = 40;
+        private readonly object _lock = new object();
+        private readonly string _root;
+        private Process _process;
+        private string _codexPath;
+        private int _port;
+        private bool _attachedToExisting;
+        private string _lastError;
+        private DateTime? _startedAtUtc;
+
+        public CodexAgentBridge(string root)
+        {
+            _root = root;
+        }
+
+        public void Start()
+        {
+            Status(true);
+        }
+
+        public void StartInBackground()
+        {
+            ThreadPool.QueueUserWorkItem(delegate { Start(); });
+        }
+
+        public void Stop()
+        {
+            lock (_lock)
+            {
+                if (_process == null || _process.HasExited)
+                {
+                    return;
+                }
+
+                try
+                {
+                    _process.Kill();
+                    _process.WaitForExit(2000);
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        public Dictionary<string, object> Status(bool ensureStarted)
+        {
+            lock (_lock)
+            {
+                if (ensureStarted)
+                {
+                    EnsureStartedLocked();
+                }
+
+                bool ready = _port > 0 && ProbeHttp("http://127.0.0.1:" + _port + "/readyz", 500);
+                bool healthy = _port > 0 && ProbeHttp("http://127.0.0.1:" + _port + "/healthz", 500);
+                bool processRunning = _process != null && !_process.HasExited;
+
+                string mode = "missing";
+                if (ready || healthy)
+                {
+                    mode = _attachedToExisting ? "attached" : "owned";
+                }
+                else if (processRunning)
+                {
+                    mode = "starting";
+                }
+                else if (!string.IsNullOrEmpty(_lastError))
+                {
+                    mode = "error";
+                }
+
+                return new Dictionary<string, object>
+                {
+                    { "ok", true },
+                    { "codexFound", !string.IsNullOrEmpty(_codexPath) && File.Exists(_codexPath) },
+                    { "codexPath", _codexPath ?? "" },
+                    { "mode", mode },
+                    { "running", ready || healthy || processRunning },
+                    { "ownedProcess", processRunning && !_attachedToExisting },
+                    { "attachedToExisting", _attachedToExisting },
+                    { "processId", processRunning ? _process.Id : 0 },
+                    { "port", _port },
+                    { "url", _port > 0 ? "ws://127.0.0.1:" + _port : "" },
+                    { "ready", ready },
+                    { "healthy", healthy },
+                    { "startedAt", _startedAtUtc.HasValue ? UnixTimeSeconds(_startedAtUtc.Value) : 0 },
+                    { "lastError", _lastError ?? "" }
+                };
+            }
+        }
+
+        private void EnsureStartedLocked()
+        {
+            if (_port > 0 && ProbeHttp("http://127.0.0.1:" + _port + "/readyz", 500))
+            {
+                return;
+            }
+
+            if (_process != null && !_process.HasExited)
+            {
+                return;
+            }
+
+            _process = null;
+            _attachedToExisting = false;
+            _lastError = null;
+
+            _codexPath = FindCodexCommand();
+            if (string.IsNullOrEmpty(_codexPath) || !File.Exists(_codexPath))
+            {
+                _lastError = "Codex CLI introuvable.";
+                return;
+            }
+
+            int preferredPort = ReadPort();
+            if (ProbeHttp("http://127.0.0.1:" + preferredPort + "/readyz", 500)
+                && ProbeHttp("http://127.0.0.1:" + preferredPort + "/healthz", 500))
+            {
+                _port = preferredPort;
+                _attachedToExisting = true;
+                return;
+            }
+
+            _port = FindAvailablePort(preferredPort);
+            if (_port <= 0)
+            {
+                _lastError = "Aucun port local disponible pour codex app-server.";
+                return;
+            }
+
+            try
+            {
+                ProcessStartInfo info = BuildStartInfo(_codexPath, _port, _root);
+                _process = Process.Start(info);
+                _startedAtUtc = DateTime.UtcNow;
+            }
+            catch (Exception ex)
+            {
+                _process = null;
+                _lastError = "Demarrage de Codex CLI impossible: " + ex.Message;
+                return;
+            }
+
+            if (!WaitUntilReady(_port, _process, 8000))
+            {
+                if (_process != null && _process.HasExited)
+                {
+                    _lastError = "codex app-server s'est arrete pendant le demarrage.";
+                }
+                else
+                {
+                    _lastError = "codex app-server ne repond pas encore.";
+                }
+            }
+        }
+
+        private static ProcessStartInfo BuildStartInfo(string codexPath, int port, string root)
+        {
+            string arguments = "app-server --listen ws://127.0.0.1:" + port;
+            var info = new ProcessStartInfo();
+
+            string ext = Path.GetExtension(codexPath);
+            if (string.Equals(ext, ".cmd", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(ext, ".bat", StringComparison.OrdinalIgnoreCase))
+            {
+                string codexJs = GetCodexJsForWrapper(codexPath);
+                string node = FindNodeExecutable(Path.GetDirectoryName(codexPath));
+                if (!string.IsNullOrEmpty(codexJs) && File.Exists(codexJs)
+                    && !string.IsNullOrEmpty(node) && File.Exists(node))
+                {
+                    info.FileName = node;
+                    info.Arguments = QuoteArg(codexJs) + " " + arguments;
+                }
+                else
+                {
+                    info.FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe");
+                    info.Arguments = "/d /c \"\"" + codexPath + "\" " + arguments + "\"";
+                }
+            }
+            else
+            {
+                info.FileName = codexPath;
+                info.Arguments = arguments;
+            }
+
+            info.WorkingDirectory = Directory.Exists(root) ? root : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            info.UseShellExecute = false;
+            info.CreateNoWindow = true;
+            return info;
+        }
+
+        private static string GetCodexJsForWrapper(string codexWrapperPath)
+        {
+            string dir = Path.GetDirectoryName(codexWrapperPath) ?? "";
+            return Path.Combine(dir, "node_modules", "@openai", "codex", "bin", "codex.js");
+        }
+
+        private static string FindNodeExecutable(string preferredDir)
+        {
+            if (!string.IsNullOrEmpty(preferredDir))
+            {
+                string bundled = Path.Combine(preferredDir, "node.exe");
+                if (File.Exists(bundled)) return bundled;
+            }
+            return FindOnPath("node.exe");
+        }
+
+        private static string QuoteArg(string value)
+        {
+            return "\"" + (value ?? "").Replace("\"", "\\\"") + "\"";
+        }
+
+        private static string FindCodexCommand()
+        {
+            string configured = (Environment.GetEnvironmentVariable("KIVRIO_CODEX_PATH") ?? "").Trim();
+            if (File.Exists(configured)) return configured;
+
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+
+            string[] candidates = new[]
+            {
+                Path.Combine(appData, "npm", "codex.cmd"),
+                FindOnPath("codex.cmd"),
+                Path.Combine(localAppData, "OpenAI", "Codex", "bin", "codex.exe"),
+                FindOnPath("codex.exe"),
+                FindOnPath("codex")
+            };
+
+            for (int i = 0; i < candidates.Length; i++)
+            {
+                if (!string.IsNullOrEmpty(candidates[i]) && File.Exists(candidates[i]))
+                {
+                    return candidates[i];
+                }
+            }
+            return null;
+        }
+
+        private static string FindOnPath(string fileName)
+        {
+            string path = Environment.GetEnvironmentVariable("PATH") ?? "";
+            string[] dirs = path.Split(Path.PathSeparator);
+            for (int i = 0; i < dirs.Length; i++)
+            {
+                string dir = (dirs[i] ?? "").Trim().Trim('"');
+                if (string.IsNullOrEmpty(dir)) continue;
+                try
+                {
+                    string candidate = Path.Combine(dir, fileName);
+                    if (File.Exists(candidate)) return candidate;
+                }
+                catch
+                {
+                }
+            }
+            return null;
+        }
+
+        private static int ReadPort()
+        {
+            string raw = Environment.GetEnvironmentVariable("KIVRIO_AGENT_CODEX_PORT");
+            int port;
+            if (int.TryParse(raw, out port) && port > 0 && port < 65536)
+            {
+                return port;
+            }
+            return DefaultPort;
+        }
+
+        private static int FindAvailablePort(int preferredPort)
+        {
+            for (int offset = 0; offset < MaxPortScan; offset++)
+            {
+                int port = preferredPort + offset;
+                if (port > 0 && port < 65536 && IsPortAvailable(port))
+                {
+                    return port;
+                }
+            }
+            return 0;
+        }
+
+        private static bool IsPortAvailable(int port)
+        {
+            TcpListener listener = null;
+            try
+            {
+                listener = new TcpListener(IPAddress.Loopback, port);
+                listener.Start();
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+            finally
+            {
+                if (listener != null)
+                {
+                    try { listener.Stop(); } catch { }
+                }
+            }
+        }
+
+        private static bool WaitUntilReady(int port, Process process, int timeoutMs)
+        {
+            DateTime deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+            while (DateTime.UtcNow < deadline)
+            {
+                if (process != null && process.HasExited)
+                {
+                    return false;
+                }
+                if (ProbeHttp("http://127.0.0.1:" + port + "/readyz", 500)
+                    && ProbeHttp("http://127.0.0.1:" + port + "/healthz", 500))
+                {
+                    return true;
+                }
+                Thread.Sleep(250);
+            }
+            return false;
+        }
+
+        private static bool ProbeHttp(string url, int timeoutMs)
+        {
+            try
+            {
+                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
+                request.Method = "GET";
+                request.Timeout = timeoutMs;
+                request.ReadWriteTimeout = timeoutMs;
+                using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                {
+                    int code = (int)response.StatusCode;
+                    return code >= 200 && code < 300;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static long UnixTimeSeconds(DateTime value)
+        {
+            return (long)(value.ToUniversalTime() - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds;
+        }
+    }
+
     internal sealed class HttpResponse
     {
         public readonly HttpStatusCode StatusCode;
@@ -1009,7 +1373,7 @@ namespace KivrioAgentUi
         public DataStore(string dataDir)
         {
             _dataDir = dataDir;
-            _storePath = Path.Combine(dataDir, "kivrio-agent-ui.json");
+            _storePath = Path.Combine(dataDir, "kivrio-chat.json");
             _uploadsDir = Path.Combine(dataDir, "uploads");
             _json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
             Directory.CreateDirectory(_dataDir);
