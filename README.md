@@ -3,8 +3,8 @@
 ![Status](https://img.shields.io/badge/status-WIP-blue)
 ![License](https://img.shields.io/badge/license-Apache--2.0%20%2F%20MPL--2.0-green)
 
-Kivrio Chat is a local interface for using Codex CLI more comfortably with local models via [Ollama](https://ollama.com/).
-It provides a desktop-style web UI with math rendering, local conversation history, and a fully local persistence layer.
+Kivrio Chat is a local chat interface for working with local AI models via [Ollama](https://ollama.com/).
+It provides a desktop-style web UI with Markdown rendering, file-aware conversations, local session authentication, and a fully local JSON persistence layer.
 
 Status: project under active development.
 Version: Kivrio Chat 2026.5.9.
@@ -19,8 +19,8 @@ Version: Kivrio Chat 2026.5.9.
 
 ## Project status
 
-Kivrio Chat is currently being rebuilt as a separate local interface.
-Standalone release notes are now maintained for Kivrio Chat releases.
+Kivrio Chat is maintained as a standalone application and repository.
+It is separate from Kivrio and Kivrio Agent UI, with its own launcher, local port range, data store, and release history.
 
 ---
 
@@ -32,7 +32,7 @@ Standalone release notes are now maintained for Kivrio Chat releases.
 - Conversation history in the left sidebar
 - Persistent local storage of conversations in a JSON file
 - Rename and delete actions for conversation links
-- Local autonomous backend serving both the UI and the API
+- Local Windows backend serving both the UI and the API
 - Local session authentication
 - Direct file reading for supported multimodal models
 
@@ -42,7 +42,7 @@ Standalone release notes are now maintained for Kivrio Chat releases.
 
 Kivrio Chat now runs as a local application made of:
 
-- a local autonomous Windows server
+- a local Windows server
 - a local JSON conversation store
 - a browser UI served from the same local server
 - local Ollama models running outside Kivrio Chat
@@ -90,7 +90,7 @@ For image files, Kivrio Chat keeps file upload support for compatible multimodal
 ### Authentication
 
 Kivrio Chat currently runs as a local-only interface on `127.0.0.1`.
-The autonomous backend protects local API routes with session-based authentication.
+The local backend protects local API routes with session-based authentication.
 
 On first launch, the interface can create a local password stored in:
 
