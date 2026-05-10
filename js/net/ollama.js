@@ -16,6 +16,7 @@ import {
   saveSystemPrompt,
   uploadConversationAttachments,
 } from './conversationsApi.js';
+import { assistantErrorMessage, showToast, userMessageForError } from '../ui/errors.js';
 
 const LS = { base: 'ollamaBase', model: 'ollamaModel' };
 const THINK_START_TAG = '<think>';
@@ -49,8 +50,55 @@ const GENERATE_ANSWER_PATHS = [
 let isSendInFlight = false;
 let systemPrompt = '';
 let systemPromptLoadPromise = null;
+let activeStreamRequest = null;
 const getRaw = (k) => { try { return localStorage.getItem(k); } catch (_) { return null; } };
 const setLS = (k, v) => { try { localStorage.setItem(k, v); } catch (_) {} };
+
+function createAbortError() {
+  if (typeof DOMException === 'function') {
+    return new DOMException('Generation annulee.', 'AbortError');
+  }
+  const error = new Error('Generation annulee.');
+  error.name = 'AbortError';
+  return error;
+}
+
+export function isAbortError(error) {
+  return Boolean(error && (error.name === 'AbortError' || error.code === 20));
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw createAbortError();
+}
+
+function publishAbortController(controller) {
+  if (typeof window === 'undefined') return;
+  window.kivrioAbortController = controller || null;
+}
+
+function beginStreamRequest() {
+  const controller = new AbortController();
+  const request = { controller };
+  activeStreamRequest = request;
+  publishAbortController(controller);
+  return request;
+}
+
+function endStreamRequest(request) {
+  if (activeStreamRequest !== request) return;
+  activeStreamRequest = null;
+  if (typeof window !== 'undefined' && window.kivrioAbortController === request?.controller) {
+    publishAbortController(null);
+  }
+}
+
+function isRequestAborted(request) {
+  return Boolean(request?.controller?.signal?.aborted);
+}
+
+function isCurrentRequest(request) {
+  return activeStreamRequest === request && !isRequestAborted(request);
+}
 
 export function readBase() {
   const v = (getRaw(LS.base) || '').trim();
@@ -343,7 +391,8 @@ function buildGeneratePrompt({ sys, convId, userText, maxPast = 16, extraSystemG
   return parts.join('\n\n');
 }
 
-export async function* streamChat({ base, model, sys, prompt, convId, maxPast = 16, images = [], extraSystemGuidance = '' }) {
+export async function* streamChat({ base, model, sys, prompt, convId, maxPast = 16, images = [], extraSystemGuidance = '', signal = null }) {
+  throwIfAborted(signal);
   const body = {
     model,
     messages: buildChatMessages({ sys, convId, userText: prompt, maxPast, images, extraSystemGuidance }),
@@ -353,10 +402,11 @@ export async function* streamChat({ base, model, sys, prompt, convId, maxPast = 
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal,
   });
 
   if ((res.status === 404 || res.status === 400) && !images.length) {
-    return yield* streamGenerate({ base, model, sys, prompt, convId, maxPast, extraSystemGuidance });
+    return yield* streamGenerate({ base, model, sys, prompt, convId, maxPast, extraSystemGuidance, signal });
   }
   if (!res.ok) throw new Error('HTTP ' + res.status);
 
@@ -365,6 +415,7 @@ export async function* streamChat({ base, model, sys, prompt, convId, maxPast = 
   let buf = '';
 
   while (true) {
+    throwIfAborted(signal);
     const { value, done } = await reader.read();
     if (done) break;
     buf += dec.decode(value, { stream: true });
@@ -388,7 +439,8 @@ export async function* streamChat({ base, model, sys, prompt, convId, maxPast = 
   } catch (_) {}
 }
 
-export async function* streamGenerate({ base, model, sys, prompt, convId, maxPast = 16, extraSystemGuidance = '' }) {
+export async function* streamGenerate({ base, model, sys, prompt, convId, maxPast = 16, extraSystemGuidance = '', signal = null }) {
+  throwIfAborted(signal);
   const effectiveSys = buildEffectiveSystemPrompt(sys, prompt, convId, extraSystemGuidance);
   const res = await fetch(base + '/api/generate', {
     method: 'POST',
@@ -399,6 +451,7 @@ export async function* streamGenerate({ base, model, sys, prompt, convId, maxPas
       prompt: buildGeneratePrompt({ sys, convId, userText: prompt, maxPast, extraSystemGuidance }),
       stream: true,
     }),
+    signal,
   });
   if (!res.ok) throw new Error('HTTP ' + res.status + ' (/api/generate)');
 
@@ -407,6 +460,7 @@ export async function* streamGenerate({ base, model, sys, prompt, convId, maxPas
   let buf = '';
 
   while (true) {
+    throwIfAborted(signal);
     const { value, done } = await reader.read();
     if (done) break;
     buf += dec.decode(value, { stream: true });
@@ -475,6 +529,7 @@ export async function regenerateFromEditedMessage({ conversationId, messageId, c
 
   isSendInFlight = true;
   setSendButtonBusy(true);
+  const streamRequest = beginStreamRequest();
 
   let aiB = null;
   try {
@@ -482,9 +537,12 @@ export async function regenerateFromEditedMessage({ conversationId, messageId, c
       content,
       truncate_following: true,
     });
+    if (!isCurrentRequest(streamRequest)) return Store.get(conversationId) || rewrittenConversation;
     const conversation = await Store.fetch(conversationId).catch(() => rewrittenConversation);
+    if (!isCurrentRequest(streamRequest)) return Store.get(conversationId) || conversation;
     renderConversationSnapshot(conversation);
     try { await mountHistory(); } catch (_) {}
+    if (!isCurrentRequest(streamRequest)) return Store.get(conversationId) || conversation;
 
     const messages = Array.isArray(conversation?.messages) ? conversation.messages : [];
     const lastMessage = messages[messages.length - 1] || null;
@@ -499,8 +557,9 @@ export async function regenerateFromEditedMessage({ conversationId, messageId, c
       await loadSystemPrompt();
       sys = readSys();
     } catch (err) {
-      aiB = renderMsg('assistant', `Erreur: ${err?.message || err}`, { model });
-      const savedError = await Store.addMsg(conversationId, 'assistant', `Erreur: ${err?.message || err}`, { model });
+      const msg = assistantErrorMessage(err, 'Impossible de charger le prompt systeme.');
+      aiB = renderMsg('assistant', msg, { model });
+      const savedError = await Store.addMsg(conversationId, 'assistant', msg, { model });
       bindMessageRecord(aiB, savedError);
       try { await mountHistory(); } catch (_) {}
       return Store.get(conversationId) || conversation;
@@ -517,13 +576,16 @@ export async function regenerateFromEditedMessage({ conversationId, messageId, c
         prompt: lastMessage.content,
         convId: conversationId,
         images: [],
+        signal: streamRequest.controller.signal,
       })) {
+        if (!isCurrentRequest(streamRequest)) return Store.get(conversationId) || conversation;
         mergeAssistantStreamChunk(assistantState, chunk);
         const livePayload = buildAssistantPayload(assistantState, { live: true });
         if (!livePayload.answerText.trim() && !livePayload.reasoningText.trim()) continue;
         renderAssistantChunk(aiB, livePayload, { model });
       }
 
+      if (!isCurrentRequest(streamRequest)) return Store.get(conversationId) || conversation;
       const finalPayload = finalizeAssistantStreamState(assistantState);
       if (finalPayload.answerText.trim() || finalPayload.reasoningText.trim()) {
         renderAssistantChunk(aiB, finalPayload, { model });
@@ -539,7 +601,10 @@ export async function regenerateFromEditedMessage({ conversationId, messageId, c
       try { await mountHistory(); } catch (_) {}
       return Store.get(conversationId) || conversation;
     } catch (err) {
-      const msg = 'Erreur: ' + (err && err.message ? err.message : String(err));
+      if (isAbortError(err) || isRequestAborted(streamRequest)) {
+        return Store.get(conversationId) || conversation;
+      }
+      const msg = assistantErrorMessage(err, 'Generation impossible.');
       renderAssistantChunk(aiB, { answerText: msg, reasoningText: '', reasoningDurationMs: null }, { model });
       const savedError = await Store.addMsg(conversationId, 'assistant', msg, { model });
       bindMessageRecord(aiB, savedError);
@@ -547,6 +612,7 @@ export async function regenerateFromEditedMessage({ conversationId, messageId, c
       return Store.get(conversationId) || conversation;
     }
   } finally {
+    endStreamRequest(streamRequest);
     isSendInFlight = false;
     setSendButtonBusy(false);
   }
@@ -554,7 +620,10 @@ export async function regenerateFromEditedMessage({ conversationId, messageId, c
 
 export async function sendCurrent() {
   const ta = qs('#composer-input');
-  if (!ta) return alert('Zone de saisie introuvable.');
+  if (!ta) {
+    showToast('Zone de saisie introuvable.');
+    return;
+  }
   if (isSendInFlight) return;
 
   const text = (ta.value || '').trim();
@@ -566,7 +635,7 @@ export async function sendCurrent() {
     await loadSystemPrompt();
     sys = readSys();
   } catch (err) {
-    alert('Impossible de charger le prompt systeme: ' + (err?.message || err));
+    showToast(userMessageForError(err, 'Impossible de charger le prompt systeme.'));
     return;
   }
   const detachedUploads = pendingUploads.length ? detachPendingUploads() : [];
@@ -582,6 +651,7 @@ export async function sendCurrent() {
 
   isSendInFlight = true;
   setSendButtonBusy(true);
+  const streamRequest = beginStreamRequest();
 
   try {
     const userBubble = renderMsg('user', text, { attachments: localAttachments });
@@ -590,6 +660,7 @@ export async function sendCurrent() {
     if (window.kivrioEnsureConversationPromise) {
       try { await window.kivrioEnsureConversationPromise; } catch (_) {}
     }
+    if (!isCurrentRequest(streamRequest)) return;
 
     const base = readBase();
     let aiB = null;
@@ -604,17 +675,19 @@ export async function sendCurrent() {
         convId = null;
       }
     }
+    if (!isCurrentRequest(streamRequest)) return;
     if (!convId && Store.create) {
       const conversation = await Store.create('Nouvelle conversation');
       convId = conversation.id;
     }
+    if (!isCurrentRequest(streamRequest)) return;
     if (!convId) {
       const message = 'Impossible de creer la conversation.';
       if (detachedUploads.length) {
         restorePendingUploads(detachedUploads, message);
         shouldReleaseDetachedUploads = false;
       }
-      alert(message);
+      showToast(message);
       return;
     }
 
@@ -623,17 +696,18 @@ export async function sendCurrent() {
       try {
         uploadedAttachments = await uploadConversationAttachments(convId, detachedUploads.map((item) => item.file));
       } catch (err) {
-        const message = err?.message || 'Televersement impossible.';
+        const message = userMessageForError(err, 'Televersement impossible.');
         restorePendingUploads(detachedUploads, message);
         shouldReleaseDetachedUploads = false;
         if (aiB) {
           renderAssistantChunk(aiB, { answerText: message }, { model });
         } else {
-          alert(message);
+          showToast(message);
         }
         return;
       }
     }
+    if (!isCurrentRequest(streamRequest)) return;
 
     try {
       const savedUserMessage = await Store.addMsg(convId, 'user', text, {
@@ -642,6 +716,7 @@ export async function sendCurrent() {
       bindMessageRecord(userBubble, savedUserMessage);
     } catch (_) {
     }
+    if (!isCurrentRequest(streamRequest)) return;
 
     const prepared = await preparePendingUploadsForSend({
       model,
@@ -653,10 +728,11 @@ export async function sendCurrent() {
       if (aiB) {
         renderAssistantChunk(aiB, { answerText: message }, { model });
       } else {
-        alert(message);
+        showToast(message);
       }
       return;
     }
+    if (!isCurrentRequest(streamRequest)) return;
 
     try {
       await Store.renameIfDefault(convId, fmtTitle(prepared.suggestedTitle || text || 'Piece jointe'));
@@ -675,12 +751,15 @@ export async function sendCurrent() {
         prompt: prepared.promptText || text,
         convId,
         images: prepared.imagePayloads || [],
+        signal: streamRequest.controller.signal,
       })) {
+        if (!isCurrentRequest(streamRequest)) return;
         mergeAssistantStreamChunk(assistantState, chunk);
         const livePayload = buildAssistantPayload(assistantState, { live: true });
         if (!livePayload.answerText.trim() && !livePayload.reasoningText.trim()) continue;
         renderAssistantChunk(aiB, livePayload, { model });
       }
+      if (!isCurrentRequest(streamRequest)) return;
       const finalPayload = finalizeAssistantStreamState(assistantState);
       if (finalPayload.answerText.trim() || finalPayload.reasoningText.trim()) {
         renderAssistantChunk(aiB, finalPayload, { model });
@@ -695,20 +774,26 @@ export async function sendCurrent() {
       }
       try { await mountHistory(); } catch (_) {}
     } catch (err) {
-      const msg = 'Erreur: ' + (err && err.message ? err.message : String(err));
+      if (isAbortError(err) || isRequestAborted(streamRequest)) {
+        return;
+      }
+      const msg = assistantErrorMessage(err, 'Generation impossible.');
       renderAssistantChunk(aiB, { answerText: msg, reasoningText: '', reasoningDurationMs: null }, { model });
       if (convId) await Store.addMsg(convId, 'assistant', msg, { model });
       try { await mountHistory(); } catch (_) {}
       console.warn('Fetch error', err);
     }
   } finally {
+    endStreamRequest(streamRequest);
     if (shouldReleaseDetachedUploads) releaseUploadItems(detachedUploads);
     isSendInFlight = false;
     setSendButtonBusy(false);
   }
 }
 
-document.addEventListener('settings:model-changed', (e) => {
-  const model = (e.detail || '').trim();
-  if (model) setLS(LS.model, model);
-});
+if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+  document.addEventListener('settings:model-changed', (e) => {
+    const model = (e.detail || '').trim();
+    if (model) setLS(LS.model, model);
+  });
+}

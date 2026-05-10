@@ -4,6 +4,7 @@ import {
   readSys,
   saveSystemPromptValue,
 } from '../net/ollama.js';
+import { showToast, userMessageForError } from './errors.js';
 
 export function wireUserMenu(){
   const user = qs('#user-entry'); const menu = qs('#user-menu');
@@ -35,7 +36,7 @@ export function wirePromptModal(){
       await loadSystemPrompt(true);
       pt.value = readSys();
     }catch(err){
-      alert(err?.message || 'Impossible de charger le prompt systeme.');
+      showToast(userMessageForError(err, 'Impossible de charger le prompt systeme.'));
     }
   };
   const save = async (e)=>{
@@ -44,7 +45,7 @@ export function wirePromptModal(){
       await saveSystemPromptValue(pt.value || '');
       pm.style.display = 'none';
     }catch(err){
-      alert(err?.message || 'Impossible d enregistrer le prompt systeme.');
+      showToast(userMessageForError(err, 'Impossible d enregistrer le prompt systeme.'));
     }
   };
   pe.addEventListener('click', open);

@@ -13,6 +13,7 @@ import {
   updateConversationMessage,
   updateFolder as updateFolderRequest,
 } from '../net/conversationsApi.js';
+import { showToast, userMessageForError } from '../ui/errors.js';
 
 const K_CUR = 'mpai.current.v1';
 let cache = [];
@@ -526,7 +527,7 @@ export async function mountHistory() {
           await Store.createFolder({ name: formatted });
           await render();
         } catch (err) {
-          window.alert(err?.message || 'Impossible de creer le dossier.');
+          showToast(userMessageForError(err, 'Impossible de creer le dossier.'));
         }
       };
     }
@@ -562,7 +563,7 @@ export async function mountHistory() {
 
     async function handleMoveConversation(conversation) {
       if (allFolders.length === 0) {
-        window.alert('Creez d’abord un dossier.');
+        showToast('Creez d abord un dossier.', { tone: 'info' });
         return;
       }
       const target = buildMovePrompt(conversation);
@@ -570,17 +571,18 @@ export async function mountHistory() {
       const resolution = resolveFolderFromInput(allFolders, target);
       if (resolution.status === 'empty') return;
       if (resolution.status === 'ambiguous') {
-        window.alert(
+        showToast(
           [
             'Plusieurs dossiers ressemblent a ce nom.',
-            'Entrez exactement l’un des dossiers disponibles :',
+            'Entrez exactement l un des dossiers disponibles :',
             ...listFolderNames().map((name) => `- ${name}`),
           ].join('\n'),
+          { tone: 'info' },
         );
         return;
       }
       if (resolution.status === 'missing' || !resolution.folder) {
-        window.alert(
+        showToast(
           [
             `Dossier introuvable : "${resolution.formatted}".`,
             'La conversation reste dans la sidebar, sans changement.',
@@ -588,6 +590,7 @@ export async function mountHistory() {
             'Dossiers disponibles :',
             ...listFolderNames().map((name) => `- ${name}`),
           ].join('\n'),
+          { tone: 'info' },
         );
         return;
       }
@@ -781,7 +784,7 @@ export async function mountHistory() {
               await Store.updateFolder(folder.id, { name: formatted });
               await render();
             } catch (err) {
-              window.alert(err?.message || 'Impossible de renommer le dossier.');
+              showToast(userMessageForError(err, 'Impossible de renommer le dossier.'));
             }
           },
         });
@@ -800,7 +803,7 @@ export async function mountHistory() {
               await Store.removeFolder(folder.id);
               await render();
             } catch (err) {
-              window.alert(err?.message || 'Impossible de supprimer le dossier.');
+              showToast(userMessageForError(err, 'Impossible de supprimer le dossier.'));
             }
           },
         });

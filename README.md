@@ -7,13 +7,13 @@ Kivrio Chat is a local chat interface for working with local AI models via [Olla
 It provides a desktop-style web UI with Markdown rendering, file-aware conversations, local session authentication, and a fully local JSON persistence layer.
 
 Status: project under active development.
-Version: Kivrio Chat 2026.5.9.
+Version: Kivrio Chat 2026.5.10.
 
 ---
 
 ## Releases
 
-- [Kivrio Chat 2026.5.9](releases/Kivrio-Chat-2026.5.9.md)
+- [Kivrio Chat 2026.5.10](releases/Kivrio-Chat-2026.5.10.md)
 
 ---
 
@@ -121,6 +121,48 @@ Logging out of the interface no longer clears persistent conversation history.
 
 ---
 
+## Operations and restoration
+
+Kivrio Chat keeps its runtime state under the local `data/` directory.
+Treat this directory as sensitive because it may contain conversations, uploaded files, and authentication data.
+
+Important local paths:
+
+- `data/kivrio-chat.json`: conversation store
+- `data/auth.json`: local authentication record
+- `data/uploads/`: conversation attachments
+- `bin/kivrio-chat-server.exe`: generated local server binary
+
+Operational notes:
+
+- `start-kivrio-chat.bat` recompiles the local server when the source file is newer than the generated binary.
+- The launcher checks the local port range and uses `/api/health` to verify that the running server is Kivrio Chat.
+- Keep Kivrio Chat bound to `127.0.0.1` unless you have reviewed authentication, cookies, and local network exposure.
+- Avoid `KIVRO_DISABLE_AUTH` outside isolated local development.
+
+Backup procedure:
+
+1. Stop Kivrio Chat when possible.
+2. Copy the whole `data/` directory, including `uploads/`.
+3. Store the backup outside the served application directory.
+
+Restore procedure:
+
+1. Stop Kivrio Chat.
+2. Replace the current `data/` directory with the backup copy.
+3. Start Kivrio Chat again with `start-kivrio-chat.bat`.
+4. Check `/api/health`, then reopen the UI and verify the conversation list.
+
+Durability notes:
+
+- JSON writes are atomic and keep the previous version as `<file>.bak`.
+- The conversation store has an explicit schema version; legacy stores are migrated automatically with a `<file>.pre-migration-v<old>-to-v<new>-<id>.bak` backup.
+- If `data/kivrio-chat.json` is unreadable but `data/kivrio-chat.json.bak` is valid, Kivrio Chat restores the active store from that backup.
+- If a JSON file is unreadable, Kivrio Chat preserves the damaged file as `<file>.corrupt-<id>.bak` before continuing.
+- To manually recover from a `.bak` or `.corrupt-*.bak` file, stop Kivrio Chat first, inspect the candidate file, then copy the chosen version back to `data/kivrio-chat.json` or `data/auth.json`.
+
+---
+
 ## Project structure
 
 - `index.html`: main UI
@@ -141,7 +183,6 @@ Logging out of the interface no longer clears persistent conversation history.
 - [x] Sidebar rename/delete actions
 - [x] File uploads for supported multimodal models
 - [x] Local session authentication
-- [ ] Codex CLI local bridge
 - [ ] Voice input/output
 
 ---

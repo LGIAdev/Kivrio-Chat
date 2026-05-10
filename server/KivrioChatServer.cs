@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -11,6 +10,251 @@ using System.Web.Script.Serialization;
 
 namespace KivrioChat
 {
+    internal sealed class RequestBodyTooLargeException : Exception
+    {
+        public RequestBodyTooLargeException(string message) : base(message)
+        {
+        }
+    }
+
+    internal sealed class UploadValidationException : Exception
+    {
+        public readonly HttpStatusCode StatusCode;
+
+        public UploadValidationException(HttpStatusCode statusCode, string message) : base(message)
+        {
+            StatusCode = statusCode;
+        }
+    }
+
+    internal static class ErrorResponses
+    {
+        public static HttpStatusCode StatusFor(Exception ex)
+        {
+            if (ex is RequestBodyTooLargeException)
+            {
+                return (HttpStatusCode)413;
+            }
+            if (ex is UploadValidationException)
+            {
+                return ((UploadValidationException)ex).StatusCode;
+            }
+            return HttpStatusCode.InternalServerError;
+        }
+
+        public static string MessageFor(Exception ex)
+        {
+            if (ex is RequestBodyTooLargeException)
+            {
+                return "Requete trop volumineuse.";
+            }
+            if (ex is UploadValidationException)
+            {
+                return ex.Message;
+            }
+            if (IsKnownPublicInvalidOperation(ex))
+            {
+                return ex.Message;
+            }
+            return "Erreur serveur interne.";
+        }
+
+        public static string ReasonFor(Exception ex)
+        {
+            if (ex is RequestBodyTooLargeException) return "request_body_too_large";
+            if (ex is UploadValidationException) return "upload_validation";
+            if (IsKnownPublicInvalidOperation(ex)) return "invalid_request";
+            return "unhandled_exception";
+        }
+
+        private static bool IsKnownPublicInvalidOperation(Exception ex)
+        {
+            string message = ex == null ? "" : (ex.Message ?? "");
+            return ex is InvalidOperationException
+                && (message == "Content-Length invalide."
+                    || message == "Boundary multipart introuvable."
+                    || message.StartsWith("Le mot de passe doit contenir au moins ", StringComparison.Ordinal)
+                    || message.StartsWith("Le mot de passe ne peut pas depasser ", StringComparison.Ordinal));
+        }
+    }
+
+    internal static class ServerLog
+    {
+        private static readonly object LockObject = new object();
+        private static readonly HashSet<string> AllowedFields = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "app",
+            "host",
+            "port",
+            "url",
+            "root_name",
+            "method",
+            "path",
+            "remote",
+            "status",
+            "exception",
+            "reason"
+        };
+
+        public static void Info(string eventName, IDictionary<string, object> fields)
+        {
+            Write("info", eventName, fields);
+        }
+
+        public static void Error(string eventName, IDictionary<string, object> fields)
+        {
+            Write("error", eventName, fields);
+        }
+
+        internal static string FormatLine(string level, string eventName, IDictionary<string, object> fields)
+        {
+            var payload = new Dictionary<string, object>();
+            payload["ts"] = DateTime.UtcNow.ToString("o");
+            payload["level"] = SafeString(level);
+            payload["event"] = SafeString(eventName);
+
+            if (fields != null)
+            {
+                foreach (var pair in fields)
+                {
+                    if (!AllowedFields.Contains(pair.Key) || pair.Value == null)
+                    {
+                        continue;
+                    }
+
+                    payload[pair.Key] = SafeValue(pair.Value);
+                }
+            }
+
+            return new JavaScriptSerializer().Serialize(payload);
+        }
+
+        private static void Write(string level, string eventName, IDictionary<string, object> fields)
+        {
+            string line = FormatLine(level, eventName, fields);
+            lock (LockObject)
+            {
+                Console.Error.WriteLine(line);
+            }
+        }
+
+        private static object SafeValue(object value)
+        {
+            if (value is int || value is long || value is bool)
+            {
+                return value;
+            }
+            return SafeString(Convert.ToString(value));
+        }
+
+        private static string SafeString(string value)
+        {
+            string text = value ?? "";
+            text = text.Replace("\r", " ").Replace("\n", " ").Replace("\t", " ");
+            const int maxLength = 160;
+            if (text.Length > maxLength)
+            {
+                text = text.Substring(0, maxLength);
+            }
+            return text;
+        }
+    }
+
+    internal sealed class AuthThrottleRecord
+    {
+        public int Failures;
+        public DateTime FirstFailureUtc;
+        public DateTime LockedUntilUtc;
+    }
+
+    internal static class DurableFile
+    {
+        public static void WriteAllTextAtomically(string path, string content, Encoding encoding)
+        {
+            string directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            string tempPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            using (var writer = new StreamWriter(stream, encoding ?? Encoding.UTF8))
+            {
+                writer.Write(content ?? "");
+                writer.Flush();
+                stream.Flush(true);
+            }
+
+            if (File.Exists(path))
+            {
+                string backupPath = path + ".bak";
+                if (File.Exists(backupPath))
+                {
+                    File.Delete(backupPath);
+                }
+                File.Replace(tempPath, path, backupPath, true);
+            }
+            else
+            {
+                File.Move(tempPath, path);
+            }
+        }
+
+        public static void BackupCorruptFile(string path)
+        {
+            try
+            {
+                if (!File.Exists(path))
+                {
+                    return;
+                }
+
+                string backupPath;
+                do
+                {
+                    backupPath = path + ".corrupt-" + Guid.NewGuid().ToString("N") + ".bak";
+                }
+                while (File.Exists(backupPath));
+
+                File.Move(path, backupPath);
+            }
+            catch
+            {
+            }
+        }
+
+        public static void BackupBeforeMigration(string path, int fromVersion, int toVersion)
+        {
+            try
+            {
+                if (!File.Exists(path))
+                {
+                    return;
+                }
+
+                string backupPath;
+                do
+                {
+                    backupPath = path
+                        + ".pre-migration-v"
+                        + Math.Max(0, fromVersion)
+                        + "-to-v"
+                        + toVersion
+                        + "-"
+                        + Guid.NewGuid().ToString("N")
+                        + ".bak";
+                }
+                while (File.Exists(backupPath));
+
+                File.Copy(path, backupPath, false);
+            }
+            catch
+            {
+            }
+        }
+    }
+
     internal static class Program
     {
         private static int Main(string[] args)
@@ -57,10 +301,23 @@ namespace KivrioChat
 
             root = Path.GetFullPath(root);
             var server = new LocalServer(root, host, port);
-            Console.WriteLine("Kivrio Chat server running on http://" + host + ":" + port + "/index.html");
-            Console.WriteLine("Application root: " + root);
+            ServerLog.Info("server_start", new Dictionary<string, object>
+            {
+                { "app", "kivrio-chat" },
+                { "host", host },
+                { "port", port },
+                { "url", "http://" + host + ":" + port + "/index.html" },
+                { "root_name", RootName(root) }
+            });
             server.Run();
             return 0;
+        }
+
+        private static string RootName(string root)
+        {
+            string trimmed = (root ?? "").TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string name = Path.GetFileName(trimmed);
+            return string.IsNullOrEmpty(name) ? "root" : name;
         }
     }
 
@@ -71,6 +328,9 @@ namespace KivrioChat
         private const int PasswordMinLength = 8;
         private const int PasswordMaxLength = 128;
         private const int Pbkdf2Iterations = 310000;
+        private const int MaxAuthFailures = 5;
+        private const int AuthFailureWindowSeconds = 300;
+        private const int AuthLockoutSeconds = 60;
         private readonly string _root;
         private readonly string _host;
         private readonly int _port;
@@ -81,9 +341,10 @@ namespace KivrioChat
         private readonly bool _sessionCookieSecure;
         private readonly int _sessionTtlSeconds;
         private readonly string _configuredAdminPassword;
-        private readonly CodexAgentBridge _agentBridge;
         private readonly object _sessionsLock = new object();
         private readonly Dictionary<string, DateTime> _sessions = new Dictionary<string, DateTime>();
+        private readonly object _authThrottleLock = new object();
+        private readonly Dictionary<string, AuthThrottleRecord> _authThrottle = new Dictionary<string, AuthThrottleRecord>();
 
         public LocalServer(string root, string host, int port)
         {
@@ -97,9 +358,6 @@ namespace KivrioChat
             _sessionCookieSecure = EnvFlag("KIVRO_COOKIE_SECURE", false);
             _sessionTtlSeconds = Math.Max(300, ReadIntEnv("KIVRO_SESSION_TTL_SECONDS", 43200));
             _configuredAdminPassword = (Environment.GetEnvironmentVariable("KIVRO_ADMIN_PASSWORD") ?? "").Trim();
-            _agentBridge = new CodexAgentBridge(root);
-            _agentBridge.StartInBackground();
-            AppDomain.CurrentDomain.ProcessExit += delegate { _agentBridge.Stop(); };
         }
 
         public void Run()
@@ -121,6 +379,7 @@ namespace KivrioChat
 
         private void HandleClient(TcpClient client)
         {
+            HttpRequest request = null;
             using (client)
             {
                 try
@@ -128,11 +387,12 @@ namespace KivrioChat
                     client.ReceiveTimeout = 15000;
                     client.SendTimeout = 15000;
                     NetworkStream stream = client.GetStream();
-                    HttpRequest request = HttpRequest.Read(stream);
+                    request = HttpRequest.Read(stream);
                     if (request == null)
                     {
                         return;
                     }
+                    request.RemoteAddress = RemoteAddressFor(client);
 
                     HttpResponse response = Route(request);
                     response.Write(stream);
@@ -141,7 +401,9 @@ namespace KivrioChat
                 {
                     try
                     {
-                        JsonError(HttpStatusCode.InternalServerError, ex.Message).Write(client.GetStream());
+                        HttpStatusCode status = ErrorResponses.StatusFor(ex);
+                        ServerLog.Error("request_error", ErrorLogFields(request, status, ex));
+                        JsonError(status, ErrorResponses.MessageFor(ex)).Write(client.GetStream());
                     }
                     catch
                     {
@@ -160,10 +422,33 @@ namespace KivrioChat
             return ServeStatic(request);
         }
 
+        private static Dictionary<string, object> ErrorLogFields(HttpRequest request, HttpStatusCode status, Exception ex)
+        {
+            var fields = new Dictionary<string, object>
+            {
+                { "app", "kivrio-chat" },
+                { "status", (int)status },
+                { "exception", ex == null ? "" : ex.GetType().Name },
+                { "reason", ErrorResponses.ReasonFor(ex) }
+            };
+            if (request != null)
+            {
+                fields["method"] = request.Method;
+                fields["path"] = request.Path;
+                fields["remote"] = request.RemoteAddress;
+            }
+            return fields;
+        }
+
         private HttpResponse RouteApi(HttpRequest request)
         {
             string method = request.Method;
             string path = request.Path;
+
+            if (IsUnsafeMethod(method) && !IsAllowedUnsafeRequestOrigin(request))
+            {
+                return JsonError(HttpStatusCode.Forbidden, "Origine de requete invalide.");
+            }
 
             if (method == "GET" && path == "/api/health")
             {
@@ -210,12 +495,25 @@ namespace KivrioChat
                     return JsonError(HttpStatusCode.Conflict, "Password setup required.");
                 }
 
+                string authThrottleKey = AuthThrottleKey(request);
+                int retryAfterSeconds;
+                if (IsAuthThrottled(authThrottleKey, out retryAfterSeconds))
+                {
+                    return AuthThrottleResponse(retryAfterSeconds);
+                }
+
                 Dictionary<string, object> body = ReadJsonObject(request);
                 if (!VerifyPassword(GetBodyString(body, "password")))
                 {
+                    retryAfterSeconds = RegisterAuthFailure(authThrottleKey);
+                    if (retryAfterSeconds > 0)
+                    {
+                        return AuthThrottleResponse(retryAfterSeconds);
+                    }
                     return JsonError(HttpStatusCode.Unauthorized, "Invalid credentials.");
                 }
 
+                ClearAuthFailures(authThrottleKey);
                 string token = CreateSession();
                 HttpResponse response = Json(AuthStatus(true));
                 response.Headers["Set-Cookie"] = BuildSessionCookie(token, false);
@@ -235,11 +533,6 @@ namespace KivrioChat
             if (!IsAuthenticated(request))
             {
                 return JsonError(HttpStatusCode.Unauthorized, "Authentication required.");
-            }
-
-            if (method == "GET" && path == "/api/agent/status")
-            {
-                return Json(_agentBridge.Status(true));
             }
 
             if (method == "GET" && path == "/api/system-prompt")
@@ -392,14 +685,8 @@ namespace KivrioChat
                 path = "/index.html";
             }
 
-            if (!IsPublicStaticPath(path))
-            {
-                return JsonError(HttpStatusCode.NotFound, "Resource not found.");
-            }
-
-            string relative = path.TrimStart('/').Replace('/', Path.DirectorySeparatorChar);
-            string fullPath = Path.GetFullPath(Path.Combine(_root, relative));
-            if (!fullPath.StartsWith(_root, StringComparison.OrdinalIgnoreCase) || !File.Exists(fullPath))
+            string fullPath = ResolvePublicStaticPath(path);
+            if (string.IsNullOrEmpty(fullPath) || !File.Exists(fullPath))
             {
                 return JsonError(HttpStatusCode.NotFound, "Resource not found.");
             }
@@ -408,13 +695,67 @@ namespace KivrioChat
             return new HttpResponse(HttpStatusCode.OK, MimeTypeFor(fullPath), body);
         }
 
-        private static bool IsPublicStaticPath(string path)
+        private string ResolvePublicStaticPath(string path)
         {
-            return path == "/index.html"
-                || path == "/favicon.ico"
-                || path.StartsWith("/css/", StringComparison.OrdinalIgnoreCase)
+            if (string.IsNullOrEmpty(path) || HasDotSegment(path))
+            {
+                return null;
+            }
+
+            string relative;
+            if (path == "/index.html" || path == "/favicon.ico")
+            {
+                relative = path.TrimStart('/');
+            }
+            else if (path.StartsWith("/css/", StringComparison.OrdinalIgnoreCase)
                 || path.StartsWith("/js/", StringComparison.OrdinalIgnoreCase)
-                || path.StartsWith("/assets/", StringComparison.OrdinalIgnoreCase);
+                || path.StartsWith("/assets/", StringComparison.OrdinalIgnoreCase))
+            {
+                relative = path.TrimStart('/').Replace('/', Path.DirectorySeparatorChar);
+            }
+            else
+            {
+                return null;
+            }
+
+            string fullPath = Path.GetFullPath(Path.Combine(_root, relative));
+            if (!IsAllowedStaticFile(fullPath))
+            {
+                return null;
+            }
+            return fullPath;
+        }
+
+        private bool IsAllowedStaticFile(string fullPath)
+        {
+            return string.Equals(fullPath, Path.GetFullPath(Path.Combine(_root, "index.html")), StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fullPath, Path.GetFullPath(Path.Combine(_root, "favicon.ico")), StringComparison.OrdinalIgnoreCase)
+                || IsPathInsideDirectory(Path.Combine(_root, "css"), fullPath)
+                || IsPathInsideDirectory(Path.Combine(_root, "js"), fullPath)
+                || IsPathInsideDirectory(Path.Combine(_root, "assets"), fullPath);
+        }
+
+        private static bool HasDotSegment(string path)
+        {
+            string[] segments = (path ?? "").Replace('\\', '/').Split('/');
+            for (int i = 0; i < segments.Length; i++)
+            {
+                if (segments[i] == "." || segments[i] == "..")
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool IsPathInsideDirectory(string rootDir, string candidatePath)
+        {
+            if (string.IsNullOrEmpty(rootDir) || string.IsNullOrEmpty(candidatePath)) return false;
+            string root = Path.GetFullPath(rootDir)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                + Path.DirectorySeparatorChar;
+            string candidate = Path.GetFullPath(candidatePath);
+            return candidate.StartsWith(root, StringComparison.OrdinalIgnoreCase);
         }
 
         private Dictionary<string, object> ReadJsonObject(HttpRequest request)
@@ -456,6 +797,250 @@ namespace KivrioChat
         private HttpResponse JsonError(HttpStatusCode status, string message)
         {
             return Json(new Dictionary<string, object> { { "error", message } }, status);
+        }
+
+        private HttpResponse AuthThrottleResponse(int retryAfterSeconds)
+        {
+            HttpResponse response = JsonError((HttpStatusCode)429, "Trop de tentatives. Reessayez plus tard.");
+            response.Headers["Retry-After"] = Math.Max(1, retryAfterSeconds).ToString();
+            return response;
+        }
+
+        private bool IsAuthThrottled(string key, out int retryAfterSeconds)
+        {
+            retryAfterSeconds = 0;
+            DateTime now = DateTime.UtcNow;
+            lock (_authThrottleLock)
+            {
+                PurgeAuthThrottleLocked(now);
+                AuthThrottleRecord record;
+                if (!_authThrottle.TryGetValue(key, out record) || record.LockedUntilUtc <= now)
+                {
+                    return false;
+                }
+
+                retryAfterSeconds = SecondsUntil(record.LockedUntilUtc, now);
+                return true;
+            }
+        }
+
+        private int RegisterAuthFailure(string key)
+        {
+            DateTime now = DateTime.UtcNow;
+            lock (_authThrottleLock)
+            {
+                PurgeAuthThrottleLocked(now);
+                AuthThrottleRecord record;
+                if (!_authThrottle.TryGetValue(key, out record))
+                {
+                    record = new AuthThrottleRecord();
+                    _authThrottle[key] = record;
+                }
+
+                if (record.FirstFailureUtc == DateTime.MinValue
+                    || now > record.FirstFailureUtc.AddSeconds(AuthFailureWindowSeconds))
+                {
+                    record.FirstFailureUtc = now;
+                    record.Failures = 0;
+                    record.LockedUntilUtc = DateTime.MinValue;
+                }
+
+                record.Failures++;
+                if (record.Failures >= MaxAuthFailures)
+                {
+                    record.LockedUntilUtc = now.AddSeconds(AuthLockoutSeconds);
+                    return AuthLockoutSeconds;
+                }
+
+                return 0;
+            }
+        }
+
+        private void ClearAuthFailures(string key)
+        {
+            lock (_authThrottleLock)
+            {
+                _authThrottle.Remove(key);
+            }
+        }
+
+        private void PurgeAuthThrottleLocked(DateTime now)
+        {
+            var expired = new List<string>();
+            foreach (var pair in _authThrottle)
+            {
+                AuthThrottleRecord record = pair.Value;
+                bool windowExpired = record.FirstFailureUtc == DateTime.MinValue
+                    || now > record.FirstFailureUtc.AddSeconds(AuthFailureWindowSeconds);
+                bool lockExpired = record.LockedUntilUtc <= now;
+                if (windowExpired && lockExpired)
+                {
+                    expired.Add(pair.Key);
+                }
+            }
+
+            foreach (string key in expired)
+            {
+                _authThrottle.Remove(key);
+            }
+        }
+
+        private static string AuthThrottleKey(HttpRequest request)
+        {
+            string remote = request == null ? "" : (request.RemoteAddress ?? "");
+            remote = NormalizeHost(remote);
+            return remote.Length == 0 ? "local" : remote;
+        }
+
+        private static int SecondsUntil(DateTime deadlineUtc, DateTime nowUtc)
+        {
+            return Math.Max(1, (int)Math.Ceiling((deadlineUtc - nowUtc).TotalSeconds));
+        }
+
+        private bool IsAllowedUnsafeRequestOrigin(HttpRequest request)
+        {
+            string origin = request.GetHeader("Origin");
+            if (!string.IsNullOrWhiteSpace(origin))
+            {
+                return MatchesRequestHost(request, origin);
+            }
+
+            string referer = request.GetHeader("Referer");
+            if (!string.IsNullOrWhiteSpace(referer))
+            {
+                return MatchesRequestHost(request, referer);
+            }
+
+            return true;
+        }
+
+        private bool MatchesRequestHost(HttpRequest request, string rawUri)
+        {
+            Uri uri;
+            if (!Uri.TryCreate((rawUri ?? "").Trim(), UriKind.Absolute, out uri))
+            {
+                return false;
+            }
+            if (!string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            string hostHeader = (request.GetHeader("Host") ?? "").Trim();
+            if (string.IsNullOrEmpty(hostHeader) && _port > 0)
+            {
+                hostHeader = _host + ":" + _port;
+            }
+
+            string expectedHost;
+            int? expectedPort;
+            if (!TryParseHostHeader(hostHeader, out expectedHost, out expectedPort))
+            {
+                return false;
+            }
+
+            if (!string.Equals(NormalizeHost(expectedHost), NormalizeHost(uri.Host), StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            int actualPort = uri.IsDefaultPort ? DefaultPortForScheme(uri.Scheme) : uri.Port;
+            if (expectedPort.HasValue)
+            {
+                return expectedPort.Value == actualPort;
+            }
+            return uri.IsDefaultPort;
+        }
+
+        private static bool IsUnsafeMethod(string method)
+        {
+            return !string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(method, "HEAD", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(method, "OPTIONS", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool TryParseHostHeader(string value, out string host, out int? port)
+        {
+            host = null;
+            port = null;
+
+            string raw = (value ?? "").Trim();
+            if (raw.Length == 0)
+            {
+                return false;
+            }
+
+            if (raw[0] == '[')
+            {
+                int end = raw.IndexOf(']');
+                if (end <= 0)
+                {
+                    return false;
+                }
+
+                host = raw.Substring(1, end - 1);
+                if (raw.Length > end + 1)
+                {
+                    if (raw[end + 1] != ':')
+                    {
+                        return false;
+                    }
+                    int parsedPort;
+                    if (!int.TryParse(raw.Substring(end + 2), out parsedPort) || parsedPort <= 0 || parsedPort > 65535)
+                    {
+                        return false;
+                    }
+                    port = parsedPort;
+                }
+                return NormalizeHost(host).Length > 0;
+            }
+
+            int firstColon = raw.IndexOf(':');
+            int lastColon = raw.LastIndexOf(':');
+            if (firstColon > 0 && firstColon == lastColon)
+            {
+                int parsedPort;
+                if (!int.TryParse(raw.Substring(lastColon + 1), out parsedPort) || parsedPort <= 0 || parsedPort > 65535)
+                {
+                    return false;
+                }
+                host = raw.Substring(0, lastColon);
+                port = parsedPort;
+            }
+            else
+            {
+                host = raw;
+            }
+
+            return NormalizeHost(host).Length > 0;
+        }
+
+        private static string NormalizeHost(string host)
+        {
+            return (host ?? "")
+                .Trim()
+                .Trim('[', ']')
+                .TrimEnd('.')
+                .ToLowerInvariant();
+        }
+
+        private static int DefaultPortForScheme(string scheme)
+        {
+            return string.Equals(scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ? 443 : 80;
+        }
+
+        private static string RemoteAddressFor(TcpClient client)
+        {
+            try
+            {
+                IPEndPoint endpoint = client.Client.RemoteEndPoint as IPEndPoint;
+                return endpoint == null ? "" : endpoint.Address.ToString();
+            }
+            catch
+            {
+                return "";
+            }
         }
 
         private Dictionary<string, object> AuthStatus(bool authenticated)
@@ -622,6 +1207,7 @@ namespace KivrioChat
             }
             catch
             {
+                DurableFile.BackupCorruptFile(_authPath);
                 return null;
             }
         }
@@ -639,13 +1225,7 @@ namespace KivrioChat
             };
 
             Directory.CreateDirectory(Path.GetDirectoryName(_authPath));
-            string tempPath = _authPath + ".tmp";
-            File.WriteAllText(tempPath, _json.Serialize(record), Encoding.UTF8);
-            if (File.Exists(_authPath))
-            {
-                File.Delete(_authPath);
-            }
-            File.Move(tempPath, _authPath);
+            DurableFile.WriteAllTextAtomically(_authPath, _json.Serialize(record), Encoding.UTF8);
         }
 
         private bool VerifyPassword(string password)
@@ -854,10 +1434,13 @@ namespace KivrioChat
     internal sealed class HttpRequest
     {
         private static readonly Encoding Latin1 = Encoding.GetEncoding("iso-8859-1");
+        private const long MaxJsonBodyBytes = 4L * 1024L * 1024L;
+        private const long MaxUploadBodyBytes = 30L * 1024L * 1024L;
 
         public string Method;
         public string Target;
         public string Path;
+        public string RemoteAddress;
         public readonly Dictionary<string, string> Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         public byte[] Body = new byte[0];
 
@@ -899,19 +1482,38 @@ namespace KivrioChat
                 request.Headers[line.Substring(0, colon).Trim()] = line.Substring(colon + 1).Trim();
             }
 
-            int contentLength = 0;
+            long contentLength = 0;
             string rawLength;
             if (request.Headers.TryGetValue("Content-Length", out rawLength))
             {
-                int.TryParse(rawLength, out contentLength);
+                if (!long.TryParse(rawLength, out contentLength) || contentLength < 0)
+                {
+                    throw new InvalidOperationException("Content-Length invalide.");
+                }
             }
 
             if (contentLength > 0)
             {
-                request.Body = ReadExact(stream, contentLength);
+                long maxBodyBytes = MaxBodyBytesFor(request);
+                if (contentLength > maxBodyBytes || contentLength > int.MaxValue)
+                {
+                    throw new RequestBodyTooLargeException("Requete trop volumineuse.");
+                }
+                request.Body = ReadExact(stream, (int)contentLength);
             }
 
             return request;
+        }
+
+        private static long MaxBodyBytesFor(HttpRequest request)
+        {
+            string path = request == null ? "" : (request.Path ?? "");
+            if (path.StartsWith("/api/conversations/", StringComparison.OrdinalIgnoreCase)
+                && path.EndsWith("/attachments", StringComparison.OrdinalIgnoreCase))
+            {
+                return MaxUploadBodyBytes;
+            }
+            return MaxJsonBodyBytes;
         }
 
         private static byte[] ReadHeaderBytes(NetworkStream stream)
@@ -955,360 +1557,6 @@ namespace KivrioChat
         }
     }
 
-    internal sealed class CodexAgentBridge
-    {
-        private const int DefaultPort = 17655;
-        private const int MaxPortScan = 40;
-        private readonly object _lock = new object();
-        private readonly string _root;
-        private Process _process;
-        private string _codexPath;
-        private int _port;
-        private bool _attachedToExisting;
-        private string _lastError;
-        private DateTime? _startedAtUtc;
-
-        public CodexAgentBridge(string root)
-        {
-            _root = root;
-        }
-
-        public void Start()
-        {
-            Status(true);
-        }
-
-        public void StartInBackground()
-        {
-            ThreadPool.QueueUserWorkItem(delegate { Start(); });
-        }
-
-        public void Stop()
-        {
-            lock (_lock)
-            {
-                if (_process == null || _process.HasExited)
-                {
-                    return;
-                }
-
-                try
-                {
-                    _process.Kill();
-                    _process.WaitForExit(2000);
-                }
-                catch
-                {
-                }
-            }
-        }
-
-        public Dictionary<string, object> Status(bool ensureStarted)
-        {
-            lock (_lock)
-            {
-                if (ensureStarted)
-                {
-                    EnsureStartedLocked();
-                }
-
-                bool ready = _port > 0 && ProbeHttp("http://127.0.0.1:" + _port + "/readyz", 500);
-                bool healthy = _port > 0 && ProbeHttp("http://127.0.0.1:" + _port + "/healthz", 500);
-                bool processRunning = _process != null && !_process.HasExited;
-
-                string mode = "missing";
-                if (ready || healthy)
-                {
-                    mode = _attachedToExisting ? "attached" : "owned";
-                }
-                else if (processRunning)
-                {
-                    mode = "starting";
-                }
-                else if (!string.IsNullOrEmpty(_lastError))
-                {
-                    mode = "error";
-                }
-
-                return new Dictionary<string, object>
-                {
-                    { "ok", true },
-                    { "codexFound", !string.IsNullOrEmpty(_codexPath) && File.Exists(_codexPath) },
-                    { "codexPath", _codexPath ?? "" },
-                    { "mode", mode },
-                    { "running", ready || healthy || processRunning },
-                    { "ownedProcess", processRunning && !_attachedToExisting },
-                    { "attachedToExisting", _attachedToExisting },
-                    { "processId", processRunning ? _process.Id : 0 },
-                    { "port", _port },
-                    { "url", _port > 0 ? "ws://127.0.0.1:" + _port : "" },
-                    { "ready", ready },
-                    { "healthy", healthy },
-                    { "startedAt", _startedAtUtc.HasValue ? UnixTimeSeconds(_startedAtUtc.Value) : 0 },
-                    { "lastError", _lastError ?? "" }
-                };
-            }
-        }
-
-        private void EnsureStartedLocked()
-        {
-            if (_port > 0 && ProbeHttp("http://127.0.0.1:" + _port + "/readyz", 500))
-            {
-                return;
-            }
-
-            if (_process != null && !_process.HasExited)
-            {
-                return;
-            }
-
-            _process = null;
-            _attachedToExisting = false;
-            _lastError = null;
-
-            _codexPath = FindCodexCommand();
-            if (string.IsNullOrEmpty(_codexPath) || !File.Exists(_codexPath))
-            {
-                _lastError = "Codex CLI introuvable.";
-                return;
-            }
-
-            int preferredPort = ReadPort();
-            if (ProbeHttp("http://127.0.0.1:" + preferredPort + "/readyz", 500)
-                && ProbeHttp("http://127.0.0.1:" + preferredPort + "/healthz", 500))
-            {
-                _port = preferredPort;
-                _attachedToExisting = true;
-                return;
-            }
-
-            _port = FindAvailablePort(preferredPort);
-            if (_port <= 0)
-            {
-                _lastError = "Aucun port local disponible pour codex app-server.";
-                return;
-            }
-
-            try
-            {
-                ProcessStartInfo info = BuildStartInfo(_codexPath, _port, _root);
-                _process = Process.Start(info);
-                _startedAtUtc = DateTime.UtcNow;
-            }
-            catch (Exception ex)
-            {
-                _process = null;
-                _lastError = "Demarrage de Codex CLI impossible: " + ex.Message;
-                return;
-            }
-
-            if (!WaitUntilReady(_port, _process, 8000))
-            {
-                if (_process != null && _process.HasExited)
-                {
-                    _lastError = "codex app-server s'est arrete pendant le demarrage.";
-                }
-                else
-                {
-                    _lastError = "codex app-server ne repond pas encore.";
-                }
-            }
-        }
-
-        private static ProcessStartInfo BuildStartInfo(string codexPath, int port, string root)
-        {
-            string arguments = "app-server --listen ws://127.0.0.1:" + port;
-            var info = new ProcessStartInfo();
-
-            string ext = Path.GetExtension(codexPath);
-            if (string.Equals(ext, ".cmd", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(ext, ".bat", StringComparison.OrdinalIgnoreCase))
-            {
-                string codexJs = GetCodexJsForWrapper(codexPath);
-                string node = FindNodeExecutable(Path.GetDirectoryName(codexPath));
-                if (!string.IsNullOrEmpty(codexJs) && File.Exists(codexJs)
-                    && !string.IsNullOrEmpty(node) && File.Exists(node))
-                {
-                    info.FileName = node;
-                    info.Arguments = QuoteArg(codexJs) + " " + arguments;
-                }
-                else
-                {
-                    info.FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe");
-                    info.Arguments = "/d /c \"\"" + codexPath + "\" " + arguments + "\"";
-                }
-            }
-            else
-            {
-                info.FileName = codexPath;
-                info.Arguments = arguments;
-            }
-
-            info.WorkingDirectory = Directory.Exists(root) ? root : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            info.UseShellExecute = false;
-            info.CreateNoWindow = true;
-            return info;
-        }
-
-        private static string GetCodexJsForWrapper(string codexWrapperPath)
-        {
-            string dir = Path.GetDirectoryName(codexWrapperPath) ?? "";
-            return Path.Combine(dir, "node_modules", "@openai", "codex", "bin", "codex.js");
-        }
-
-        private static string FindNodeExecutable(string preferredDir)
-        {
-            if (!string.IsNullOrEmpty(preferredDir))
-            {
-                string bundled = Path.Combine(preferredDir, "node.exe");
-                if (File.Exists(bundled)) return bundled;
-            }
-            return FindOnPath("node.exe");
-        }
-
-        private static string QuoteArg(string value)
-        {
-            return "\"" + (value ?? "").Replace("\"", "\\\"") + "\"";
-        }
-
-        private static string FindCodexCommand()
-        {
-            string configured = (Environment.GetEnvironmentVariable("KIVRIO_CODEX_PATH") ?? "").Trim();
-            if (File.Exists(configured)) return configured;
-
-            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-
-            string[] candidates = new[]
-            {
-                Path.Combine(appData, "npm", "codex.cmd"),
-                FindOnPath("codex.cmd"),
-                Path.Combine(localAppData, "OpenAI", "Codex", "bin", "codex.exe"),
-                FindOnPath("codex.exe"),
-                FindOnPath("codex")
-            };
-
-            for (int i = 0; i < candidates.Length; i++)
-            {
-                if (!string.IsNullOrEmpty(candidates[i]) && File.Exists(candidates[i]))
-                {
-                    return candidates[i];
-                }
-            }
-            return null;
-        }
-
-        private static string FindOnPath(string fileName)
-        {
-            string path = Environment.GetEnvironmentVariable("PATH") ?? "";
-            string[] dirs = path.Split(Path.PathSeparator);
-            for (int i = 0; i < dirs.Length; i++)
-            {
-                string dir = (dirs[i] ?? "").Trim().Trim('"');
-                if (string.IsNullOrEmpty(dir)) continue;
-                try
-                {
-                    string candidate = Path.Combine(dir, fileName);
-                    if (File.Exists(candidate)) return candidate;
-                }
-                catch
-                {
-                }
-            }
-            return null;
-        }
-
-        private static int ReadPort()
-        {
-            string raw = Environment.GetEnvironmentVariable("KIVRIO_AGENT_CODEX_PORT");
-            int port;
-            if (int.TryParse(raw, out port) && port > 0 && port < 65536)
-            {
-                return port;
-            }
-            return DefaultPort;
-        }
-
-        private static int FindAvailablePort(int preferredPort)
-        {
-            for (int offset = 0; offset < MaxPortScan; offset++)
-            {
-                int port = preferredPort + offset;
-                if (port > 0 && port < 65536 && IsPortAvailable(port))
-                {
-                    return port;
-                }
-            }
-            return 0;
-        }
-
-        private static bool IsPortAvailable(int port)
-        {
-            TcpListener listener = null;
-            try
-            {
-                listener = new TcpListener(IPAddress.Loopback, port);
-                listener.Start();
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
-            finally
-            {
-                if (listener != null)
-                {
-                    try { listener.Stop(); } catch { }
-                }
-            }
-        }
-
-        private static bool WaitUntilReady(int port, Process process, int timeoutMs)
-        {
-            DateTime deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
-            while (DateTime.UtcNow < deadline)
-            {
-                if (process != null && process.HasExited)
-                {
-                    return false;
-                }
-                if (ProbeHttp("http://127.0.0.1:" + port + "/readyz", 500)
-                    && ProbeHttp("http://127.0.0.1:" + port + "/healthz", 500))
-                {
-                    return true;
-                }
-                Thread.Sleep(250);
-            }
-            return false;
-        }
-
-        private static bool ProbeHttp(string url, int timeoutMs)
-        {
-            try
-            {
-                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
-                request.Method = "GET";
-                request.Timeout = timeoutMs;
-                request.ReadWriteTimeout = timeoutMs;
-                using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
-                {
-                    int code = (int)response.StatusCode;
-                    return code >= 200 && code < 300;
-                }
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private static long UnixTimeSeconds(DateTime value)
-        {
-            return (long)(value.ToUniversalTime() - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds;
-        }
-    }
-
     internal sealed class HttpResponse
     {
         public readonly HttpStatusCode StatusCode;
@@ -1323,7 +1571,12 @@ namespace KivrioChat
             Body = body ?? new byte[0];
             Headers["Connection"] = "close";
             Headers["X-Content-Type-Options"] = "nosniff";
+            Headers["X-Frame-Options"] = "DENY";
             Headers["Referrer-Policy"] = "no-referrer";
+            Headers["Content-Security-Policy"] = "frame-ancestors 'none'; base-uri 'self'; object-src 'none'";
+            Headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=(), usb=()";
+            Headers["Cross-Origin-Opener-Policy"] = "same-origin";
+            Headers["Cross-Origin-Resource-Policy"] = "same-origin";
         }
 
         public void Write(NetworkStream stream)
@@ -1355,6 +1608,8 @@ namespace KivrioChat
             if (status == HttpStatusCode.Forbidden) return "Forbidden";
             if (status == HttpStatusCode.NotFound) return "Not Found";
             if (status == HttpStatusCode.MethodNotAllowed) return "Method Not Allowed";
+            if ((int)status == 413) return "Payload Too Large";
+            if ((int)status == 429) return "Too Many Requests";
             if (status == HttpStatusCode.Gone) return "Gone";
             if (status == HttpStatusCode.InternalServerError) return "Internal Server Error";
             return status.ToString();
@@ -1363,6 +1618,12 @@ namespace KivrioChat
 
     internal sealed class DataStore
     {
+        private const int CurrentStoreSchemaVersion = 1;
+        private const int MaxAttachmentCount = 5;
+        private const long MaxImageAttachmentBytes = 10L * 1024L * 1024L;
+        private const long MaxPdfAttachmentBytes = 20L * 1024L * 1024L;
+        private const long MaxTextAttachmentBytes = 2L * 1024L * 1024L;
+        private const long MaxAttachmentTotalBytes = 25L * 1024L * 1024L;
         private readonly object _lock = new object();
         private readonly string _dataDir;
         private readonly string _storePath;
@@ -1557,8 +1818,10 @@ namespace KivrioChat
             {
                 ConversationRecord conversation = FindConversation(id);
                 if (conversation == null) return false;
+                List<AttachmentRecord> removedAttachments = DetachAttachmentsForConversation(id);
                 _data.conversations.Remove(conversation);
                 Save();
+                DeleteAttachmentFiles(removedAttachments);
                 return true;
             }
         }
@@ -1606,12 +1869,24 @@ namespace KivrioChat
                 if (body.ContainsKey("role")) message.role = CleanRole(GetString(body, "role", message.role));
                 if (body.ContainsKey("reasoning_text")) message.reasoningText = GetNullableString(body, "reasoning_text");
                 if (body.ContainsKey("reasoningText")) message.reasoningText = GetNullableString(body, "reasoningText");
+                List<AttachmentRecord> removedAttachmentsAfterSave = null;
                 if (body.ContainsKey("truncate_following") && GetBool(body, "truncate_following"))
                 {
-                    conversation.messages.RemoveRange(index + 1, conversation.messages.Count - index - 1);
+                    int removeCount = conversation.messages.Count - index - 1;
+                    if (removeCount > 0)
+                    {
+                        List<MessageRecord> removedMessages = conversation.messages.GetRange(index + 1, removeCount);
+                        List<AttachmentRecord> removedAttachments = DetachAttachmentsForMessages(removedMessages);
+                        conversation.messages.RemoveRange(index + 1, removeCount);
+                        removedAttachmentsAfterSave = removedAttachments;
+                    }
                 }
                 conversation.updatedAt = NowMs();
                 Save();
+                if (removedAttachmentsAfterSave != null)
+                {
+                    DeleteAttachmentFiles(removedAttachmentsAfterSave);
+                }
                 return new Dictionary<string, object>
                 {
                     { "conversation", SerializeConversation(conversation, false) },
@@ -1626,6 +1901,8 @@ namespace KivrioChat
             {
                 ConversationRecord conversation = FindConversation(conversationId);
                 if (conversation == null) return new List<Dictionary<string, object>>();
+                if (files == null) files = new List<UploadedFile>();
+                ValidateAttachments(files);
 
                 var result = new List<Dictionary<string, object>>();
                 foreach (UploadedFile file in files)
@@ -1668,9 +1945,9 @@ namespace KivrioChat
 
         public string GetAttachmentPath(AttachmentRecord attachment)
         {
+            if (attachment == null) return "";
             string fullPath = Path.GetFullPath(Path.Combine(_dataDir, attachment.relativePath ?? ""));
-            string dataRoot = Path.GetFullPath(_dataDir);
-            if (!fullPath.StartsWith(dataRoot, StringComparison.OrdinalIgnoreCase))
+            if (!IsPathInsideDirectory(_uploadsDir, fullPath))
             {
                 return "";
             }
@@ -1679,32 +1956,87 @@ namespace KivrioChat
 
         private AppData Load()
         {
+            AppData loaded;
+            if (TryLoadStoreFile(_storePath, out loaded))
+            {
+                return NormalizeLoadedStore(loaded, true);
+            }
+
+            if (File.Exists(_storePath))
+            {
+                AppData backup;
+                if (TryLoadStoreFile(_storePath + ".bak", out backup))
+                {
+                    DurableFile.BackupCorruptFile(_storePath);
+                    AppData recovered = NormalizeLoadedStore(backup, false, false);
+                    SaveData(recovered);
+                    return recovered;
+                }
+                DurableFile.BackupCorruptFile(_storePath);
+            }
+
+            return Normalize(new AppData());
+        }
+
+        private bool TryLoadStoreFile(string path, out AppData data)
+        {
+            data = null;
+            if (!File.Exists(path))
+            {
+                return false;
+            }
+
             try
             {
-                if (File.Exists(_storePath))
-                {
-                    AppData loaded = _json.Deserialize<AppData>(File.ReadAllText(_storePath, Encoding.UTF8));
-                    return Normalize(loaded);
-                }
+                data = _json.Deserialize<AppData>(File.ReadAllText(path, Encoding.UTF8));
+                return data != null;
             }
             catch
             {
+                return false;
             }
-            return Normalize(new AppData());
         }
 
         private void Save()
         {
             Directory.CreateDirectory(_dataDir);
-            string tempPath = _storePath + ".tmp";
-            File.WriteAllText(tempPath, _json.Serialize(_data), Encoding.UTF8);
-            if (File.Exists(_storePath)) File.Delete(_storePath);
-            File.Move(tempPath, _storePath);
+            DurableFile.WriteAllTextAtomically(_storePath, _json.Serialize(_data), Encoding.UTF8);
+        }
+
+        private void SaveData(AppData data)
+        {
+            Directory.CreateDirectory(_dataDir);
+            DurableFile.WriteAllTextAtomically(_storePath, _json.Serialize(data), Encoding.UTF8);
+        }
+
+        private AppData NormalizeLoadedStore(AppData data, bool backupBeforeMigration)
+        {
+            return NormalizeLoadedStore(data, backupBeforeMigration, true);
+        }
+
+        private AppData NormalizeLoadedStore(AppData data, bool backupBeforeMigration, bool persistMigration)
+        {
+            int sourceVersion = data == null ? 0 : data.schemaVersion;
+            bool needsMigration = sourceVersion < CurrentStoreSchemaVersion;
+            AppData normalized = Normalize(data);
+            if (needsMigration && persistMigration)
+            {
+                if (backupBeforeMigration)
+                {
+                    DurableFile.BackupBeforeMigration(_storePath, sourceVersion, CurrentStoreSchemaVersion);
+                }
+                SaveData(normalized);
+            }
+            return normalized;
         }
 
         private AppData Normalize(AppData data)
         {
             if (data == null) data = new AppData();
+            if (data.schemaVersion < CurrentStoreSchemaVersion)
+            {
+                data.schemaVersion = CurrentStoreSchemaVersion;
+            }
             if (data.folders == null) data.folders = new List<FolderRecord>();
             if (data.conversations == null) data.conversations = new List<ConversationRecord>();
             if (data.attachments == null) data.attachments = new List<AttachmentRecord>();
@@ -1734,13 +2066,95 @@ namespace KivrioChat
         private void LinkAttachments(MessageRecord message)
         {
             if (message.attachmentIds == null) return;
+            var validAttachmentIds = new List<string>();
             foreach (string attachmentId in message.attachmentIds)
             {
                 AttachmentRecord attachment = _data.attachments.Find(delegate(AttachmentRecord item) { return item.id == attachmentId; });
-                if (attachment != null)
+                if (attachment != null && attachment.conversationId == message.conversationId)
                 {
                     attachment.messageId = message.id;
+                    validAttachmentIds.Add(attachmentId);
                 }
+            }
+            message.attachmentIds = validAttachmentIds;
+        }
+
+        private List<AttachmentRecord> DetachAttachmentsForConversation(string conversationId)
+        {
+            var removed = new List<AttachmentRecord>();
+            for (int i = _data.attachments.Count - 1; i >= 0; i--)
+            {
+                AttachmentRecord attachment = _data.attachments[i];
+                if (attachment.conversationId == conversationId)
+                {
+                    removed.Add(attachment);
+                    _data.attachments.RemoveAt(i);
+                }
+            }
+            return removed;
+        }
+
+        private List<AttachmentRecord> DetachAttachmentsForMessages(List<MessageRecord> messages)
+        {
+            var messageIds = new HashSet<string>();
+            foreach (MessageRecord message in messages ?? new List<MessageRecord>())
+            {
+                if (!string.IsNullOrEmpty(message.id))
+                {
+                    messageIds.Add(message.id);
+                }
+            }
+
+            var removed = new List<AttachmentRecord>();
+            if (messageIds.Count == 0) return removed;
+            for (int i = _data.attachments.Count - 1; i >= 0; i--)
+            {
+                AttachmentRecord attachment = _data.attachments[i];
+                if (messageIds.Contains(attachment.messageId))
+                {
+                    removed.Add(attachment);
+                    _data.attachments.RemoveAt(i);
+                }
+            }
+            return removed;
+        }
+
+        private void DeleteAttachmentFiles(List<AttachmentRecord> attachments)
+        {
+            foreach (AttachmentRecord attachment in attachments ?? new List<AttachmentRecord>())
+            {
+                DeleteAttachmentFile(attachment);
+            }
+        }
+
+        private void DeleteAttachmentFile(AttachmentRecord attachment)
+        {
+            try
+            {
+                string filePath = GetAttachmentPath(attachment);
+                if (string.IsNullOrEmpty(filePath)) return;
+                if (File.Exists(filePath))
+                {
+                    File.Delete(filePath);
+                }
+                DeleteEmptyUploadDirectories(Path.GetDirectoryName(filePath));
+            }
+            catch
+            {
+            }
+        }
+
+        private void DeleteEmptyUploadDirectories(string startDir)
+        {
+            if (string.IsNullOrEmpty(startDir)) return;
+            string current = Path.GetFullPath(startDir);
+            while (IsPathInsideDirectory(_uploadsDir, current))
+            {
+                if (!Directory.Exists(current)) break;
+                if (Directory.GetFileSystemEntries(current).Length > 0) break;
+                Directory.Delete(current);
+                current = Path.GetDirectoryName(current);
+                if (string.IsNullOrEmpty(current)) break;
             }
         }
 
@@ -1881,6 +2295,123 @@ namespace KivrioChat
             return name;
         }
 
+        private static bool IsPathInsideDirectory(string rootDir, string candidatePath)
+        {
+            if (string.IsNullOrEmpty(rootDir) || string.IsNullOrEmpty(candidatePath)) return false;
+            string root = Path.GetFullPath(rootDir)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                + Path.DirectorySeparatorChar;
+            string candidate = Path.GetFullPath(candidatePath);
+            return candidate.StartsWith(root, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void ValidateAttachments(List<UploadedFile> files)
+        {
+            int count = 0;
+            long totalBytes = 0;
+            if (files == null) return;
+
+            foreach (UploadedFile file in files)
+            {
+                if (file == null || file.Content == null) continue;
+                count++;
+                if (count > MaxAttachmentCount)
+                {
+                    throw new UploadValidationException((HttpStatusCode)413, "Maximum " + MaxAttachmentCount + " fichiers par message.");
+                }
+
+                string safeName = SafeFileName(file.FileName);
+                string kind = AttachmentKindFor(safeName, file.ContentType);
+                if (string.IsNullOrEmpty(kind))
+                {
+                    throw new UploadValidationException(HttpStatusCode.BadRequest, "Type de fichier non pris en charge: " + safeName);
+                }
+
+                long size = file.Content.LongLength;
+                long limit = AttachmentSizeLimit(kind);
+                if (size > limit)
+                {
+                    throw new UploadValidationException((HttpStatusCode)413, "Fichier trop volumineux: " + safeName);
+                }
+
+                totalBytes += size;
+                if (totalBytes > MaxAttachmentTotalBytes)
+                {
+                    throw new UploadValidationException((HttpStatusCode)413, "Le total des fichiers depasse la limite autorisee.");
+                }
+            }
+        }
+
+        private static long AttachmentSizeLimit(string kind)
+        {
+            if (kind == "image") return MaxImageAttachmentBytes;
+            if (kind == "pdf") return MaxPdfAttachmentBytes;
+            if (kind == "text") return MaxTextAttachmentBytes;
+            return 0;
+        }
+
+        private static string AttachmentKindFor(string fileName, string contentType)
+        {
+            string ext = Path.GetExtension(fileName ?? "").ToLowerInvariant();
+            string mime = NormalizeMimeType(contentType);
+
+            if (ext == ".jpg" || ext == ".jpeg")
+            {
+                return IsMimeAllowed(mime, "image/jpeg") ? "image" : null;
+            }
+            if (ext == ".png")
+            {
+                return IsMimeAllowed(mime, "image/png") ? "image" : null;
+            }
+            if (ext == ".webp")
+            {
+                return IsMimeAllowed(mime, "image/webp") ? "image" : null;
+            }
+            if (ext == ".pdf")
+            {
+                return IsMimeAllowed(mime, "application/pdf") ? "pdf" : null;
+            }
+            if (ext == ".txt")
+            {
+                return IsTextMimeAllowed(mime) ? "text" : null;
+            }
+            if (ext == ".md")
+            {
+                return IsMarkdownMimeAllowed(mime) ? "text" : null;
+            }
+            return null;
+        }
+
+        private static string NormalizeMimeType(string contentType)
+        {
+            string mime = (contentType ?? "").Trim().ToLowerInvariant();
+            int semi = mime.IndexOf(';');
+            if (semi >= 0) mime = mime.Substring(0, semi).Trim();
+            return mime;
+        }
+
+        private static bool IsMimeAllowed(string actual, string expected)
+        {
+            return string.IsNullOrEmpty(actual)
+                || actual == "application/octet-stream"
+                || actual == expected;
+        }
+
+        private static bool IsTextMimeAllowed(string actual)
+        {
+            return string.IsNullOrEmpty(actual)
+                || actual == "application/octet-stream"
+                || actual.StartsWith("text/", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsMarkdownMimeAllowed(string actual)
+        {
+            return IsTextMimeAllowed(actual)
+                || actual == "application/markdown"
+                || actual == "text/markdown"
+                || actual == "text/x-markdown";
+        }
+
         private static string GetString(Dictionary<string, object> body, string key, string fallback)
         {
             object value;
@@ -1939,6 +2470,7 @@ namespace KivrioChat
 
     public sealed class AppData
     {
+        public int schemaVersion { get; set; }
         public string systemPrompt { get; set; }
         public long systemPromptUpdatedAt { get; set; }
         public List<FolderRecord> folders { get; set; }

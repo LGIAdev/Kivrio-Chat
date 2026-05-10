@@ -1,3 +1,5 @@
+import { decorateHttpError } from '../ui/errors.js';
+
 const JSON_HEADERS = {
   Accept: 'application/json',
   'Content-Type': 'application/json',
@@ -45,7 +47,11 @@ async function request(path, options = {}) {
     if (res.status === 401 && !url.pathname.startsWith('/api/auth/login')) {
       notifyAuthRequired(message);
     }
-    throw new Error(message);
+    throw decorateHttpError(new Error(message), {
+      status: res.status,
+      serverMessage: message,
+      path: url.pathname,
+    });
   }
 
   return payload;

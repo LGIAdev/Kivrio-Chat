@@ -29,3 +29,25 @@ If you discover a security vulnerability in Kivrio:
 ## Responsible Disclosure
 We ask that you **do not publicly disclose the vulnerability** until a fix has been released,  
 to protect users of Kivrio.
+
+---
+
+## Local Dependency Inventory
+
+Kivrio Chat does not use a package-manager manifest in this repository: no `package.json`, lockfile, `.csproj`, or external runtime dependency file is present.
+
+Vendored browser dependency:
+
+- KaTeX `0.16.10`, stored under `assets/vendor/katex/` and loaded locally for math rendering.
+
+The dependency scan performed here is local-only. It inventories vendored code and obvious manifests, but it does not query external vulnerability databases. A release process should add an explicit online CVE/advisory check when network access is approved.
+
+---
+
+## Operational Logging
+
+Kivrio Chat server logs are emitted as single-line JSON events on stderr.
+
+The logger uses an explicit allowlist of fields and is not meant to record request bodies, cookies, authorization headers, passwords, conversation content, attachment contents, or full local filesystem paths.
+
+Unexpected server errors are reported to clients with a generic message. The structured log keeps only operational metadata such as event name, level, method, path, status, exception type, and a stable reason code.

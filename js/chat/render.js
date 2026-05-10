@@ -4,6 +4,7 @@
 // - Préserve les maths pour KaTeX (\\(...\\), \\[...\\], $$...$$) pendant le rendu Markdown
 
 import { qs } from '../core/dom.js';
+import { userMessageForError } from '../ui/errors.js';
 
 /* -----------------------------------------------------------
  * 1) Normalisation LaTeX (pour KaTeX)
@@ -475,7 +476,7 @@ async function handleMessageEditSave(bubble, editor){
       activeMessageEditor = null;
     }
   } catch (error) {
-    editor.status.textContent = error?.message || 'Modification impossible.';
+    editor.status.textContent = userMessageForError(error, 'Modification impossible.');
     editor.saveButton.disabled = false;
     editor.cancelButton.disabled = false;
     editor.textarea.disabled = false;

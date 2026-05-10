@@ -1,5 +1,6 @@
 import { mountHistory, Store } from '../store/conversations.js';
 import { getAuthStatus, login, logout, setupPassword } from '../net/conversationsApi.js';
+import { userMessageForError } from '../ui/errors.js';
 
 const OVERLAY_ID = 'kivrio-login-overlay';
 let authEnabled = true;
@@ -138,13 +139,13 @@ export function renderLoginSplash(message = '') {
         }
         await completeAuthSuccess();
       } catch (err) {
-        const messageText = err?.message || 'Connexion impossible.';
+        const messageText = err?.serverMessage || err?.message || 'Connexion impossible.';
         if (messageText === 'Password setup required.') {
           setupRequired = true;
           applyOverlayMode();
           setLoginError('Choisissez d abord votre mot de passe.');
         } else {
-          setLoginError(messageText);
+          setLoginError(userMessageForError(err, 'Connexion impossible.'));
         }
       } finally {
         button.disabled = false;
@@ -194,7 +195,7 @@ export function wireLogout() {
 
   window.addEventListener('kivro:auth-required', (event) => {
     setupRequired = false;
-    renderLoginSplash(event?.detail?.message || 'Session requise.');
+    renderLoginSplash(userMessageForError({ message: event?.detail?.message }, 'Session requise.'));
   });
 
   const doLogout = async (e) => {

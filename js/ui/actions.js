@@ -1,5 +1,6 @@
 import { qs } from '../core/dom.js';
 import { sendCurrent, readBase, readModel, ping } from '../net/ollama.js';
+import { showToast, userMessageForError } from './errors.js';
 
 export function wireSendAction(){
   const ta = qs('#composer-input'); const btn = qs('#send-btn');
@@ -25,7 +26,7 @@ holder.append(label, pill);
     const base = prompt('Base Ollama (http://127.0.0.1:11434)', readBase()); if(base!=null) localStorage.setItem('ollamaBase', base);
     const model = prompt('Mod\u00E8le', readModel()); if(model!=null) localStorage.setItem('ollamaModel', model);
     refreshTitle();
-    try{ await ping(readBase()); setPill(true,'OK'); }catch(e){ setPill(false,'\u00C9chec'); alert('Ping \u00E9chou\u00E9: '+(e?.message||e)); }
+    try{ await ping(readBase()); setPill(true,'OK'); }catch(e){ setPill(false,'\u00C9chec'); showToast(userMessageForError(e, 'Ping Ollama impossible.')); }
   });
   ping(readBase()).then(()=>setPill(true,'OK')).catch(()=>setPill(false,'\u00C9chec'));
 }

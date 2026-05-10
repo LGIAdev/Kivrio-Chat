@@ -8,7 +8,8 @@ set "SERVER_EXE=%ROOT%\bin\kivrio-chat-server.exe"
 set "SERVER_SRC=%ROOT%\server\KivrioChatServer.cs"
 set "WAIT_SECONDS=30"
 
-if not exist "%SERVER_EXE%" (
+call :needs_compile
+if not errorlevel 1 (
   call :compile_server
   if errorlevel 1 (
     pause
@@ -67,6 +68,11 @@ if errorlevel 1 (
   exit /b 1
 )
 exit /b 0
+
+:needs_compile
+if not exist "%SERVER_EXE%" exit /b 0
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { if ((Get-Item -LiteralPath '%SERVER_SRC%').LastWriteTimeUtc -gt (Get-Item -LiteralPath '%SERVER_EXE%').LastWriteTimeUtc) { exit 0 } exit 1 } catch { exit 0 }" >nul 2>nul
+exit /b %errorlevel%
 
 :is_port_busy
 netstat -ano | findstr /R /C:":%~1 .*LISTENING" >nul

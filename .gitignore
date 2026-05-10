@@ -59,6 +59,8 @@ data/
 bin/
 
 # Release artifacts
-releases/
+releases/*
+!releases/
+!releases/*.md
 
 
