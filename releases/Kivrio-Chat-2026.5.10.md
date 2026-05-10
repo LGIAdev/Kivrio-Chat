@@ -13,4 +13,4 @@
 
 ## Full Changelog
 
-https://github.com/LGIAdev/Kivrio-Chat/commits/v2026.5.10
+https://github.com/LGIAdev/Kivrio-Chat/compare/v2026.5.9...v2026.5.10
