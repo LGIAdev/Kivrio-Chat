@@ -1,0 +1,4 @@
+# Phase 3 placeholder.
+# Limiter is disabled for the local-only V1 unless a later review changes it.
+
+enabled = false

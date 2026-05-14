@@ -1,0 +1,4 @@
+# Phase 3 placeholder.
+# The real SearXNG engine configuration will be reviewed before bundling.
+
+use_default_settings: true

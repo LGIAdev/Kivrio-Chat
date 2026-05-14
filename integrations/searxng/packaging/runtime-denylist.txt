@@ -1,0 +1,62 @@
+# Denied future runtime bundle paths.
+# Matching is case-insensitive and path separators are normalized to "/".
+
+# Git and repository metadata
+.git/
+.github/
+.gitignore
+.gitattributes
+
+# Python bytecode and local caches
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+
+# Installer caches and unused package artifacts
+pip-cache/
+pip_cache/
+cache/pip/
+*.whl
+*.egg
+pip/
+pip-*.dist-info/
+setuptools/
+setuptools-*.dist-info/
+wheel/
+wheel-*.dist-info/
+
+# Development tests and documentation
+test/
+tests/
+testing/
+docs/
+doc/
+documentation/
+examples/
+example/
+
+# Build outputs and source build leftovers
+build/
+dist/
+*.obj
+*.pdb
+*.exp
+*.ilk
+*.lib
+*.a
+
+# Frontend and unrelated dependency trees
+node_modules/
+
+# Virtualenv and local activation artifacts
+.venv/
+venv/
+pyvenv.cfg
+activate
+activate.bat
+Activate.ps1

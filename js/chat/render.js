@@ -86,9 +86,14 @@ function cloneAttachments(attachments){
   return Array.isArray(attachments) ? attachments.map((item) => ({ ...item })) : [];
 }
 
+function cloneWebSources(sources){
+  return Array.isArray(sources) ? sources.map((item) => ({ ...item })) : [];
+}
+
 function bubbleMetaToOptions(meta){
   return {
     attachments: cloneAttachments(meta?.attachments),
+    webSources: cloneWebSources(meta?.webSources),
     reasoningText: meta?.reasoningText ?? null,
     model: meta?.model ?? null,
     reasoningDurationMs: meta?.reasoningDurationMs ?? null,
@@ -134,6 +139,9 @@ function syncBubbleMeta(container, role, text, options = {}){
     attachments: Object.prototype.hasOwnProperty.call(options, 'attachments')
       ? cloneAttachments(options.attachments)
       : cloneAttachments(previous.attachments),
+    webSources: Object.prototype.hasOwnProperty.call(options, 'webSources')
+      ? cloneWebSources(options.webSources)
+      : cloneWebSources(previous.webSources),
     reasoningText: Object.prototype.hasOwnProperty.call(options, 'reasoningText')
       ? (options.reasoningText == null ? null : String(options.reasoningText))
       : (previous.reasoningText ?? null),
@@ -1062,6 +1070,7 @@ export function updateBubbleContent(container, role, text, options = {}){
       }
 
       container.appendChild(group);
+      appendWebSources(container, meta.webSources || []);
       appendMessageAttachments(container, options.attachments || []);
       renderMathBlocks(container);
       refreshMessageActionState(container);
@@ -1069,6 +1078,7 @@ export function updateBubbleContent(container, role, text, options = {}){
     }
 
     if (renderMarkdownBlock(container, payload.answerText)) {
+      appendWebSources(container, meta.webSources || []);
       appendMessageAttachments(container, options.attachments || []);
       renderMathBlocks(container);
       refreshMessageActionState(container);
@@ -1158,6 +1168,63 @@ function bindAttachmentOpen(card, href, attachment){
       viewer.focus();
     }
   });
+}
+
+function webSourceHref(value){
+  try {
+    const url = new URL(String(value || '').trim());
+    if(url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+    return url.href;
+  } catch (_) {
+    return '';
+  }
+}
+
+function appendWebSources(container, sources){
+  const normalized = Array.isArray(sources)
+    ? sources
+      .map((source) => ({ ...source, href: webSourceHref(source?.url) }))
+      .filter((source) => source.href)
+    : [];
+  if(normalized.length === 0) return;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'message-web-sources';
+
+  const title = document.createElement('div');
+  title.className = 'message-web-sources-title';
+  title.textContent = 'Sources Web';
+  wrap.appendChild(title);
+
+  const list = document.createElement('ol');
+  list.className = 'message-web-sources-list';
+
+  normalized.forEach((source, index) => {
+    const item = document.createElement('li');
+    item.className = 'message-web-source';
+
+    const number = document.createElement('span');
+    number.className = 'message-web-source-index';
+    number.textContent = `[${Number(source.index || 0) || index + 1}]`;
+
+    const link = document.createElement('a');
+    link.className = 'message-web-source-link';
+    link.href = source.href;
+    link.target = '_blank';
+    link.rel = 'noreferrer';
+    link.textContent = String(source.title || source.url || '').trim();
+
+    const meta = document.createElement('span');
+    meta.className = 'message-web-source-meta';
+    meta.textContent = String(source.source || '').trim();
+
+    item.append(number, link);
+    if(meta.textContent) item.appendChild(meta);
+    list.appendChild(item);
+  });
+
+  wrap.appendChild(list);
+  container.appendChild(wrap);
 }
 
 function appendMessageAttachments(container, attachments){
@@ -1256,6 +1323,7 @@ export function bindMessageRecord(bubble, record){
     record.content ?? bubble.__kivrioMessageMeta?.text ?? '',
     {
       attachments: record.attachments,
+      webSources: record.webSources ?? record.web_sources ?? [],
       reasoningText: record.reasoningText ?? record.reasoning_text ?? null,
       model: record.model ?? null,
       reasoningDurationMs: record.reasoningDurationMs ?? record.reasoning_duration_ms ?? null,

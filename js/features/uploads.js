@@ -11,9 +11,15 @@ const LIMITS = {
 const state = {
   items: [],
   addBtn: null,
+  addMenu: null,
+  addFileMenuItem: null,
+  webSearchMenuItem: null,
+  webSearchIndicator: null,
+  webSearchClear: null,
   fileInput: null,
   list: null,
   error: null,
+  webSearchEnabled: false,
 };
 
 function makeId() {
@@ -191,19 +197,89 @@ function defaultPromptForAttachments({ mode, userText }) {
   return 'Analyse le document joint.';
 }
 
+function setAddMenuOpen(open) {
+  if (!state.addMenu || !state.addBtn) return;
+  state.addMenu.hidden = !open;
+  state.addMenu.classList.toggle('is-open', open);
+  state.addBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+function openFilePicker() {
+  if (!state.fileInput) return;
+  if (typeof state.fileInput.showPicker === 'function') {
+    state.fileInput.showPicker();
+    return;
+  }
+  state.fileInput.click();
+}
+
+function renderWebSearchSelection() {
+  if (state.webSearchMenuItem) {
+    state.webSearchMenuItem.classList.toggle('is-active', state.webSearchEnabled);
+    state.webSearchMenuItem.setAttribute('aria-checked', state.webSearchEnabled ? 'true' : 'false');
+  }
+  if (state.webSearchIndicator) {
+    state.webSearchIndicator.hidden = !state.webSearchEnabled;
+  }
+}
+
+function clearWebSearchSelection() {
+  state.webSearchEnabled = false;
+  renderWebSearchSelection();
+}
+
+export function isWebSearchEnabled() {
+  return state.webSearchEnabled;
+}
+
+export function consumeWebSearchSelection() {
+  const enabled = state.webSearchEnabled;
+  clearWebSearchSelection();
+  return enabled;
+}
+
 export function wireUploads() {
   state.addBtn = document.getElementById('add-btn');
+  state.addMenu = document.getElementById('composer-add-menu');
+  state.addFileMenuItem = document.getElementById('add-file-menu-item');
+  state.webSearchMenuItem = document.getElementById('web-search-menu-item');
+  state.webSearchIndicator = document.getElementById('web-search-indicator');
+  state.webSearchClear = document.getElementById('web-search-clear');
   state.fileInput = document.getElementById('file-input');
   state.list = document.getElementById('composer-attachments');
   state.error = document.getElementById('composer-upload-error');
   if (!state.addBtn || !state.fileInput || !state.list || !state.error) return;
 
-  state.addBtn.addEventListener('click', () => {
-    if (typeof state.fileInput.showPicker === 'function') {
-      state.fileInput.showPicker();
-      return;
-    }
-    state.fileInput.click();
+  state.addBtn.addEventListener('click', (event) => {
+    event.preventDefault();
+    setAddMenuOpen(state.addMenu ? state.addMenu.hidden : false);
+  });
+  if (state.addFileMenuItem) {
+    state.addFileMenuItem.addEventListener('click', () => {
+      setAddMenuOpen(false);
+      openFilePicker();
+    });
+  } else {
+    state.addBtn.addEventListener('dblclick', openFilePicker);
+  }
+  if (state.webSearchMenuItem) {
+    state.webSearchMenuItem.addEventListener('click', () => {
+      state.webSearchEnabled = !state.webSearchEnabled;
+      renderWebSearchSelection();
+      setAddMenuOpen(false);
+    });
+  }
+  if (state.webSearchClear) {
+    state.webSearchClear.addEventListener('click', clearWebSearchSelection);
+  }
+  document.addEventListener('click', (event) => {
+    const target = event.target;
+    if (!(target instanceof Node)) return;
+    if (state.addBtn?.contains(target) || state.addMenu?.contains(target)) return;
+    setAddMenuOpen(false);
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') setAddMenuOpen(false);
   });
   state.fileInput.addEventListener('change', () => {
     const files = Array.from(state.fileInput.files || []);
@@ -219,6 +295,7 @@ export function wireUploads() {
   });
 
   renderPendingUploads();
+  renderWebSearchSelection();
 }
 
 export function hasPendingUploads() {
@@ -336,4 +413,6 @@ export async function preparePendingUploadsForSend({ model, userText, onStatus, 
 
 if (typeof window !== 'undefined') {
   window.kivrioClearPendingUploads = clearPendingUploads;
+  window.kivrioIsWebSearchEnabled = isWebSearchEnabled;
+  window.kivrioClearWebSearchSelection = clearWebSearchSelection;
 }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -201,6 +202,33 @@ namespace KivrioChat
             }
         }
 
+        public static void WriteAllTextAtomicallyWithoutBackup(string path, string content, Encoding encoding)
+        {
+            string directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            string tempPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            using (var writer = new StreamWriter(stream, encoding ?? Encoding.UTF8))
+            {
+                writer.Write(content ?? "");
+                writer.Flush();
+                stream.Flush(true);
+            }
+
+            if (File.Exists(path))
+            {
+                File.Replace(tempPath, path, null, true);
+            }
+            else
+            {
+                File.Move(tempPath, path);
+            }
+        }
+
         public static void BackupCorruptFile(string path)
         {
             try
@@ -309,7 +337,20 @@ namespace KivrioChat
                 { "url", "http://" + host + ":" + port + "/index.html" },
                 { "root_name", RootName(root) }
             });
-            server.Run();
+            EventHandler processExitHandler = delegate { server.StopManagedWebSearchRuntime(); };
+            ConsoleCancelEventHandler cancelHandler = delegate { server.StopManagedWebSearchRuntime(); };
+            AppDomain.CurrentDomain.ProcessExit += processExitHandler;
+            Console.CancelKeyPress += cancelHandler;
+            try
+            {
+                server.Run();
+            }
+            finally
+            {
+                server.StopManagedWebSearchRuntime();
+                AppDomain.CurrentDomain.ProcessExit -= processExitHandler;
+                Console.CancelKeyPress -= cancelHandler;
+            }
             return 0;
         }
 
@@ -331,6 +372,18 @@ namespace KivrioChat
         private const int MaxAuthFailures = 5;
         private const int AuthFailureWindowSeconds = 300;
         private const int AuthLockoutSeconds = 60;
+        private const int WebSearchQueryMaxLength = 400;
+        private const int WebSearchDefaultMaxResults = 5;
+        private const int WebSearchMaxResults = 5;
+        private const int WebSearchTimeoutMs = 3000;
+        private const int WebSearchHealthcheckTimeoutMs = 1000;
+        private const int SearxngLauncherTimeoutMs = 30000;
+        private const int SearxngStopTimeoutMs = 10000;
+        private const string WebSearchBaseUrlEnv = "KIVRIO_WEB_SEARCH_BASE_URL";
+        private const string WebSearchEnableManagedEnv = "KIVRIO_WEB_SEARCH_ENABLE_MANAGED";
+        private const string WebSearchAllowMockEnv = "KIVRIO_WEB_SEARCH_ALLOW_MOCK";
+        private const string WebSearchMockBaseUrlEnv = "KIVRIO_WEB_SEARCH_MOCK_BASE_URL";
+        private const string WebSearchUnavailableMessage = "La recherche Web est momentan\u00e9ment indisponible. Vous pouvez r\u00e9essayer ou continuer sans recherche Web.";
         private readonly string _root;
         private readonly string _host;
         private readonly int _port;
@@ -345,6 +398,12 @@ namespace KivrioChat
         private readonly Dictionary<string, DateTime> _sessions = new Dictionary<string, DateTime>();
         private readonly object _authThrottleLock = new object();
         private readonly Dictionary<string, AuthThrottleRecord> _authThrottle = new Dictionary<string, AuthThrottleRecord>();
+        private readonly object _searxngLock = new object();
+        private readonly object _shutdownLock = new object();
+        private Uri _managedSearxngBaseUri;
+        private volatile bool _shutdownRequested;
+        private bool _listenerStopQueued;
+        private TcpListener _listener;
 
         public LocalServer(string root, string host, int port)
         {
@@ -369,11 +428,37 @@ namespace KivrioChat
             }
 
             var listener = new TcpListener(address, _port);
+            _listener = listener;
             listener.Start();
-            while (true)
+            try
             {
-                TcpClient client = listener.AcceptTcpClient();
-                ThreadPool.QueueUserWorkItem(delegate { HandleClient(client); });
+                while (!_shutdownRequested)
+                {
+                    TcpClient client;
+                    try
+                    {
+                        client = listener.AcceptTcpClient();
+                    }
+                    catch (SocketException)
+                    {
+                        if (_shutdownRequested) break;
+                        throw;
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        if (_shutdownRequested) break;
+                        throw;
+                    }
+                    ThreadPool.QueueUserWorkItem(delegate { HandleClient(client); });
+                }
+            }
+            finally
+            {
+                if (ReferenceEquals(_listener, listener))
+                {
+                    _listener = null;
+                }
+                try { listener.Stop(); } catch { }
             }
         }
 
@@ -396,6 +481,7 @@ namespace KivrioChat
 
                     HttpResponse response = Route(request);
                     response.Write(stream);
+                    QueueListenerStopIfShutdownRequested();
                 }
                 catch (Exception ex)
                 {
@@ -530,6 +616,27 @@ namespace KivrioChat
                 return response;
             }
 
+            if (method == "POST" && path == "/api/shutdown")
+            {
+                if (!IsLoopbackRemote(request))
+                {
+                    return JsonError(HttpStatusCode.Forbidden, "Arret local refuse.");
+                }
+                if (!IsAuthenticated(request))
+                {
+                    return JsonError(HttpStatusCode.Unauthorized, "Authentication required.");
+                }
+
+                RevokeSession(GetSessionToken(request));
+                RequestLocalShutdown();
+                Dictionary<string, object> payload = AuthStatus(false);
+                payload["ok"] = true;
+                payload["shuttingDown"] = true;
+                HttpResponse response = Json(payload);
+                response.Headers["Set-Cookie"] = BuildSessionCookie("", true);
+                return response;
+            }
+
             if (!IsAuthenticated(request))
             {
                 return JsonError(HttpStatusCode.Unauthorized, "Authentication required.");
@@ -542,6 +649,11 @@ namespace KivrioChat
             if (method == "POST" && path == "/api/system-prompt")
             {
                 return Json(_store.UpdateSystemPrompt(ReadJsonObject(request)));
+            }
+
+            if (method == "POST" && path == "/api/web-search")
+            {
+                return HandleWebSearch(ReadJsonObject(request));
             }
 
             if (method == "GET" && path == "/api/conversations")
@@ -586,6 +698,7 @@ namespace KivrioChat
                 if (method == "DELETE" && parts.Length == 3)
                 {
                     if (!_store.DeleteConversation(conversationId)) return JsonError(HttpStatusCode.NotFound, "Conversation introuvable.");
+                    CleanupManagedWebSearchRuntimeAfterUserDeletion();
                     return Json(new Dictionary<string, object> { { "ok", true } });
                 }
                 if (method == "GET" && parts.Length == 4 && parts[3] == "messages")
@@ -630,6 +743,606 @@ namespace KivrioChat
             }
 
             return JsonError(HttpStatusCode.NotFound, "Endpoint introuvable.");
+        }
+
+        private HttpResponse HandleWebSearch(Dictionary<string, object> body)
+        {
+            string query = GetBodyString(body, "query").Trim();
+            if (query.Length == 0 || query.Length > WebSearchQueryMaxLength)
+            {
+                return JsonError(HttpStatusCode.BadRequest, "Requete Recherche Web invalide.");
+            }
+
+            int maxResults = ReadWebSearchMaxResults(body);
+            Uri baseUri;
+            if (!TryResolveWebSearchBaseUri(out baseUri))
+            {
+                return Json(WebSearchUnavailablePayload());
+            }
+
+            try
+            {
+                return Json(QueryLocalSearxng(baseUri, query, maxResults));
+            }
+            catch
+            {
+                ClearManagedSearxngBaseUri(baseUri);
+                return Json(WebSearchUnavailablePayload());
+            }
+        }
+
+        private bool TryResolveWebSearchBaseUri(out Uri baseUri)
+        {
+            baseUri = null;
+            string configuredBaseUrl = Environment.GetEnvironmentVariable(WebSearchBaseUrlEnv);
+            if (!string.IsNullOrWhiteSpace(configuredBaseUrl))
+            {
+                return TryGetLocalWebSearchBaseUri(configuredBaseUrl, out baseUri);
+            }
+
+            lock (_searxngLock)
+            {
+                if (_managedSearxngBaseUri != null)
+                {
+                    if (IsWebSearchEndpointHealthy(_managedSearxngBaseUri))
+                    {
+                        baseUri = _managedSearxngBaseUri;
+                        return true;
+                    }
+                    _managedSearxngBaseUri = null;
+                }
+
+                if (TryStartManagedSearxng(out baseUri))
+                {
+                    _managedSearxngBaseUri = baseUri;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private void ClearManagedSearxngBaseUri(Uri baseUri)
+        {
+            if (baseUri == null) return;
+            lock (_searxngLock)
+            {
+                if (_managedSearxngBaseUri != null && Uri.Compare(_managedSearxngBaseUri, baseUri, UriComponents.HttpRequestUrl, UriFormat.SafeUnescaped, StringComparison.OrdinalIgnoreCase) == 0)
+                {
+                    _managedSearxngBaseUri = null;
+                }
+            }
+        }
+
+        private void CleanupManagedWebSearchRuntimeAfterUserDeletion()
+        {
+            StopManagedWebSearchRuntime();
+        }
+
+        private void RequestLocalShutdown()
+        {
+            _shutdownRequested = true;
+        }
+
+        private void QueueListenerStopIfShutdownRequested()
+        {
+            if (!_shutdownRequested)
+            {
+                return;
+            }
+
+            lock (_shutdownLock)
+            {
+                if (_listenerStopQueued)
+                {
+                    return;
+                }
+                _listenerStopQueued = true;
+            }
+
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    Thread.Sleep(100);
+                    TcpListener listener = _listener;
+                    if (listener != null)
+                    {
+                        listener.Stop();
+                    }
+                }
+                catch
+                {
+                }
+            });
+        }
+
+        public void StopManagedWebSearchRuntime()
+        {
+            lock (_searxngLock)
+            {
+                _managedSearxngBaseUri = null;
+            }
+
+            string pythonPath;
+            string stopScriptPath;
+            if (TryResolveEmbeddedPythonPath(_root, out pythonPath) && TryResolveSearxngStopScriptPath(_root, out stopScriptPath))
+            {
+                try
+                {
+                    var start = new ProcessStartInfo
+                    {
+                        FileName = pythonPath,
+                        Arguments = QuoteArg(stopScriptPath) + " --purge-runtime",
+                        WorkingDirectory = Path.GetDirectoryName(stopScriptPath),
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                    };
+                    using (Process process = Process.Start(start))
+                    {
+                        if (process != null && !process.WaitForExit(SearxngStopTimeoutMs))
+                        {
+                            try { process.Kill(); } catch { }
+                        }
+                    }
+                }
+                catch
+                {
+                }
+            }
+
+            PurgeManagedWebSearchRuntime(_root);
+        }
+
+        private bool TryStartManagedSearxng(out Uri baseUri)
+        {
+            baseUri = null;
+            string pythonPath;
+            string launcherPath;
+            if (!TryResolveEmbeddedPythonPath(_root, out pythonPath)) return false;
+            if (!TryResolveSearxngStartScriptPath(_root, out launcherPath)) return false;
+            if (EnvFlag(WebSearchAllowMockEnv, false))
+            {
+                return TryResolveMockLauncherBaseUri(out baseUri);
+            }
+            if (!IsManagedWebSearchEnabled())
+            {
+                return false;
+            }
+
+            try
+            {
+                var start = new ProcessStartInfo
+                {
+                    FileName = pythonPath,
+                    Arguments = BuildSearxngLauncherArguments(launcherPath, true),
+                    WorkingDirectory = Path.GetDirectoryName(launcherPath),
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                };
+                start.EnvironmentVariables["KIVRIO_SEARXNG_ROOT"] = Path.GetFullPath(Path.Combine(_root, "integrations", "searxng"));
+
+                using (Process process = Process.Start(start))
+                {
+                    if (process == null) return false;
+                    string output = process.StandardOutput.ReadToEnd();
+                    process.StandardError.ReadToEnd();
+                    if (!process.WaitForExit(SearxngLauncherTimeoutMs))
+                    {
+                        try { process.Kill(); } catch { }
+                        return false;
+                    }
+                    return TryReadLauncherBaseUri(output, out baseUri);
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool TryResolveMockLauncherBaseUri(out Uri baseUri)
+        {
+            baseUri = null;
+            string mockBaseUrl = Environment.GetEnvironmentVariable(WebSearchMockBaseUrlEnv);
+            if (string.IsNullOrWhiteSpace(mockBaseUrl)) return false;
+            return TryGetLocalWebSearchBaseUri(mockBaseUrl, out baseUri);
+        }
+
+        internal static bool IsManagedWebSearchEnabled()
+        {
+            return EnvFlag(WebSearchEnableManagedEnv, true);
+        }
+
+        internal static string BuildSearxngLauncherArguments(string launcherPath, bool realStart)
+        {
+            string arguments = QuoteArg(launcherPath) + " --json";
+            if (realStart)
+            {
+                arguments += " --real-start";
+            }
+            return arguments;
+        }
+
+        internal static bool TryResolveEmbeddedPythonPath(string root, out string pythonPath)
+        {
+            pythonPath = null;
+            if (string.IsNullOrWhiteSpace(root)) return false;
+            string rootPath = Path.GetFullPath(root);
+            string candidate = Path.GetFullPath(Path.Combine(rootPath, "runtime", "python", "python.exe"));
+            if (!IsPathInsideDirectory(Path.Combine(rootPath, "runtime", "python"), candidate)) return false;
+            if (!File.Exists(candidate)) return false;
+            pythonPath = candidate;
+            return true;
+        }
+
+        internal static bool TryResolveSearxngStartScriptPath(string root, out string launcherPath)
+        {
+            launcherPath = null;
+            if (string.IsNullOrWhiteSpace(root)) return false;
+            string rootPath = Path.GetFullPath(root);
+            string searxngRoot = Path.Combine(rootPath, "integrations", "searxng");
+            string candidate = Path.GetFullPath(Path.Combine(searxngRoot, "launcher", "start_searxng.py"));
+            if (!IsPathInsideDirectory(searxngRoot, candidate)) return false;
+            if (!File.Exists(candidate)) return false;
+            launcherPath = candidate;
+            return true;
+        }
+
+        internal static bool TryResolveSearxngStopScriptPath(string root, out string stopScriptPath)
+        {
+            stopScriptPath = null;
+            if (string.IsNullOrWhiteSpace(root)) return false;
+            string rootPath = Path.GetFullPath(root);
+            string searxngRoot = Path.Combine(rootPath, "integrations", "searxng");
+            string candidate = Path.GetFullPath(Path.Combine(searxngRoot, "launcher", "stop_searxng.py"));
+            if (!IsPathInsideDirectory(searxngRoot, candidate)) return false;
+            if (!File.Exists(candidate)) return false;
+            stopScriptPath = candidate;
+            return true;
+        }
+
+        internal static void PurgeManagedWebSearchRuntime(string root)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(root)) return;
+                string rootPath = Path.GetFullPath(root);
+                string searxngRoot = Path.Combine(rootPath, "integrations", "searxng");
+                string runtimeDir = Path.GetFullPath(Path.Combine(searxngRoot, "runtime"));
+                if (!IsPathInsideDirectory(searxngRoot, runtimeDir)) return;
+                if (!Directory.Exists(runtimeDir)) return;
+
+                DeleteRuntimeFile(runtimeDir, "searxng.pid");
+                DeleteRuntimeFile(runtimeDir, "searxng.stdout.log");
+                DeleteRuntimeFile(runtimeDir, "searxng.stderr.log");
+                DeleteRuntimeFile(runtimeDir, "settings-launch.yml");
+                ClearRuntimeDirectory(runtimeDir, "cache");
+                ClearRuntimeDirectory(runtimeDir, "logs");
+                ClearRuntimeDirectory(runtimeDir, "tmp");
+            }
+            catch
+            {
+            }
+        }
+
+        private static void DeleteRuntimeFile(string runtimeDir, string fileName)
+        {
+            try
+            {
+                string path = Path.GetFullPath(Path.Combine(runtimeDir, fileName));
+                if (!IsPathInsideDirectory(runtimeDir, path)) return;
+                if (File.Exists(path)) File.Delete(path);
+            }
+            catch
+            {
+            }
+        }
+
+        private static void ClearRuntimeDirectory(string runtimeDir, string directoryName)
+        {
+            try
+            {
+                string directory = Path.GetFullPath(Path.Combine(runtimeDir, directoryName));
+                if (!IsPathInsideDirectory(runtimeDir, directory)) return;
+                if (!Directory.Exists(directory)) return;
+                foreach (string file in Directory.GetFiles(directory))
+                {
+                    try
+                    {
+                        string fullPath = Path.GetFullPath(file);
+                        if (IsPathInsideDirectory(directory, fullPath)) File.Delete(fullPath);
+                    }
+                    catch
+                    {
+                    }
+                }
+                foreach (string childDirectory in Directory.GetDirectories(directory))
+                {
+                    try
+                    {
+                        string fullPath = Path.GetFullPath(childDirectory);
+                        if (IsPathInsideDirectory(directory, fullPath)) Directory.Delete(fullPath, true);
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        internal static bool TryReadLauncherBaseUri(string output, out Uri baseUri)
+        {
+            baseUri = null;
+            string text = (output ?? "").Trim();
+            if (text.Length == 0) return false;
+
+            try
+            {
+                object parsed = new JavaScriptSerializer().DeserializeObject(text);
+                var payload = parsed as Dictionary<string, object>;
+                if (payload == null) return false;
+
+                object okValue;
+                bool ok = payload.TryGetValue("ok", out okValue) && Convert.ToString(okValue).Equals("True", StringComparison.OrdinalIgnoreCase);
+                if (!ok) return false;
+
+                object baseUrlValue;
+                if (!payload.TryGetValue("base_url", out baseUrlValue) || baseUrlValue == null) return false;
+                return TryGetLocalWebSearchBaseUri(Convert.ToString(baseUrlValue), out baseUri);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static string QuoteArg(string value)
+        {
+            return "\"" + (value ?? "").Replace("\"", "\\\"") + "\"";
+        }
+
+        private static Dictionary<string, object> WebSearchUnavailablePayload()
+        {
+            return new Dictionary<string, object>
+            {
+                { "ok", false },
+                { "available", false },
+                { "results", new List<object>() },
+                { "message", WebSearchUnavailableMessage }
+            };
+        }
+
+        private Dictionary<string, object> QueryLocalSearxng(Uri baseUri, string query, int maxResults)
+        {
+            Uri searchUri = BuildSearxngSearchUri(baseUri, query, maxResults);
+            var request = (HttpWebRequest)WebRequest.Create(searchUri);
+            request.Method = "GET";
+            request.Accept = "application/json";
+            request.Timeout = WebSearchTimeoutMs;
+            request.ReadWriteTimeout = WebSearchTimeoutMs;
+
+            using (var response = (HttpWebResponse)request.GetResponse())
+            {
+                if (response.StatusCode != HttpStatusCode.OK)
+                {
+                    return WebSearchUnavailablePayload();
+                }
+
+                using (var reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8))
+                {
+                    object parsed = _json.DeserializeObject(reader.ReadToEnd());
+                    var payload = parsed as Dictionary<string, object>;
+                    return new Dictionary<string, object>
+                    {
+                        { "ok", true },
+                        { "available", true },
+                        { "results", NormalizeWebSearchResults(payload, maxResults) },
+                        { "message", "" }
+                    };
+                }
+            }
+        }
+
+        private static Uri BuildSearxngSearchUri(Uri baseUri, string query, int maxResults)
+        {
+            string root = baseUri.ToString().TrimEnd('/') + "/";
+            Uri searchRoot = new Uri(new Uri(root), "search");
+            string queryString = "q=" + Uri.EscapeDataString(query)
+                + "&format=json"
+                + "&language=auto"
+                + "&safesearch=0"
+                + "&pageno=1"
+                + "&categories=general"
+                + "&max_results=" + Math.Max(1, Math.Min(maxResults, WebSearchMaxResults));
+            return new Uri(searchRoot.ToString() + "?" + queryString);
+        }
+
+        private static bool IsWebSearchEndpointHealthy(Uri baseUri)
+        {
+            if (baseUri == null) return false;
+            try
+            {
+                Uri healthUri = new Uri(baseUri.ToString().TrimEnd('/') + "/healthz");
+                var request = (HttpWebRequest)WebRequest.Create(healthUri);
+                request.Method = "GET";
+                request.Accept = "text/plain, application/json";
+                request.Timeout = WebSearchHealthcheckTimeoutMs;
+                request.ReadWriteTimeout = WebSearchHealthcheckTimeoutMs;
+                using (var response = (HttpWebResponse)request.GetResponse())
+                {
+                    return (int)response.StatusCode >= 200 && (int)response.StatusCode < 300;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool TryGetLocalWebSearchBaseUri(string rawBaseUrl, out Uri baseUri)
+        {
+            baseUri = null;
+            string value = (rawBaseUrl ?? "").Trim();
+            if (value.Length == 0) return false;
+            if (!Uri.TryCreate(value, UriKind.Absolute, out baseUri)) return false;
+            if (baseUri.Scheme != Uri.UriSchemeHttp && baseUri.Scheme != Uri.UriSchemeHttps) return false;
+            if (!string.IsNullOrEmpty(baseUri.UserInfo)) return false;
+            return IsLoopbackHost(baseUri.Host);
+        }
+
+        private static bool IsLoopbackHost(string host)
+        {
+            string value = (host ?? "").Trim().Trim('[', ']').ToLowerInvariant();
+            if (value == "localhost") return true;
+            IPAddress address;
+            return IPAddress.TryParse(value, out address) && IPAddress.IsLoopback(address);
+        }
+
+        private static int ReadWebSearchMaxResults(Dictionary<string, object> body)
+        {
+            int parsed;
+            string raw = GetBodyString(body, "max_results");
+            if (raw.Length == 0)
+            {
+                raw = GetBodyString(body, "maxResults");
+            }
+            if (!int.TryParse(raw, out parsed))
+            {
+                parsed = WebSearchDefaultMaxResults;
+            }
+            return Math.Max(1, Math.Min(parsed, WebSearchMaxResults));
+        }
+
+        private static List<Dictionary<string, object>> NormalizeWebSearchResults(Dictionary<string, object> payload, int maxResults)
+        {
+            var output = new List<Dictionary<string, object>>();
+            if (payload == null) return output;
+
+            object rawResults;
+            if (!payload.TryGetValue("results", out rawResults)) return output;
+
+            object[] items = rawResults as object[];
+            if (items == null) return output;
+
+            var seenUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (object rawItem in items)
+            {
+                var item = rawItem as Dictionary<string, object>;
+                if (item == null) continue;
+
+                string title = CleanWebText(WebSearchStringValue(item, "title"), 180);
+                string url = NormalizeWebSearchUrl(WebSearchStringValue(item, "url"));
+                string snippet = CleanWebText(FirstWebSearchStringValue(item, "content", "snippet"), 500);
+                string source = CleanWebText(FirstWebSearchStringValue(item, "engine", "source"), 120);
+                if (source.Length == 0) source = HostFromUrl(url);
+                if (title.Length == 0 || url.Length == 0) continue;
+                if (seenUrls.Contains(url)) continue;
+
+                seenUrls.Add(url);
+                output.Add(new Dictionary<string, object>
+                {
+                    { "title", title },
+                    { "url", url },
+                    { "snippet", snippet },
+                    { "source", source }
+                });
+                if (output.Count >= maxResults) break;
+            }
+
+            return output;
+        }
+
+        private static string WebSearchStringValue(Dictionary<string, object> item, string key)
+        {
+            object value;
+            if (item == null || !item.TryGetValue(key, out value) || value == null) return "";
+            return Convert.ToString(value) ?? "";
+        }
+
+        private static string FirstWebSearchStringValue(Dictionary<string, object> item, params string[] keys)
+        {
+            foreach (string key in keys ?? new string[0])
+            {
+                string value = WebSearchStringValue(item, key);
+                if (!string.IsNullOrWhiteSpace(value)) return value;
+            }
+            return "";
+        }
+
+        private static string NormalizeWebSearchUrl(string raw)
+        {
+            Uri uri;
+            if (!Uri.TryCreate((raw ?? "").Trim(), UriKind.Absolute, out uri)) return "";
+            if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) return "";
+            return uri.ToString();
+        }
+
+        private static string HostFromUrl(string url)
+        {
+            Uri uri;
+            if (!Uri.TryCreate(url, UriKind.Absolute, out uri)) return "";
+            return uri.Host;
+        }
+
+        private static string CleanWebText(string raw, int maxLength)
+        {
+            string decoded = WebUtility.HtmlDecode(raw ?? "");
+            var builder = new StringBuilder();
+            bool insideTag = false;
+            foreach (char ch in decoded)
+            {
+                if (ch == '<')
+                {
+                    insideTag = true;
+                    continue;
+                }
+                if (ch == '>')
+                {
+                    insideTag = false;
+                    continue;
+                }
+                if (!insideTag)
+                {
+                    builder.Append(ch);
+                }
+            }
+            return LimitText(CollapseWhitespace(builder.ToString()), maxLength);
+        }
+
+        private static string CollapseWhitespace(string value)
+        {
+            var builder = new StringBuilder();
+            bool previousWasWhitespace = false;
+            foreach (char ch in value ?? "")
+            {
+                if (char.IsWhiteSpace(ch))
+                {
+                    if (!previousWasWhitespace)
+                    {
+                        builder.Append(' ');
+                        previousWasWhitespace = true;
+                    }
+                    continue;
+                }
+                builder.Append(ch);
+                previousWasWhitespace = false;
+            }
+            return builder.ToString().Trim();
+        }
+
+        private static string LimitText(string value, int maxLength)
+        {
+            string text = (value ?? "").Trim();
+            if (maxLength <= 0 || text.Length <= maxLength) return text;
+            return text.Substring(0, maxLength).Trim();
         }
 
         private HttpResponse RouteAttachment(HttpRequest request)
@@ -912,6 +1625,24 @@ namespace KivrioChat
             }
 
             return true;
+        }
+
+        private static bool IsLoopbackRemote(HttpRequest request)
+        {
+            string remote = request == null ? "" : (request.RemoteAddress ?? "");
+            remote = NormalizeHost(remote);
+            if (remote.Length == 0)
+            {
+                return false;
+            }
+
+            if (string.Equals(remote, "localhost", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            IPAddress address;
+            return IPAddress.TryParse(remote, out address) && IPAddress.IsLoopback(address);
         }
 
         private bool MatchesRequestHost(HttpRequest request, string rawUri)
@@ -1436,6 +2167,7 @@ namespace KivrioChat
         private static readonly Encoding Latin1 = Encoding.GetEncoding("iso-8859-1");
         private const long MaxJsonBodyBytes = 4L * 1024L * 1024L;
         private const long MaxUploadBodyBytes = 30L * 1024L * 1024L;
+        private const long MaxWebSearchBodyBytes = 16L * 1024L;
 
         public string Method;
         public string Target;
@@ -1512,6 +2244,10 @@ namespace KivrioChat
                 && path.EndsWith("/attachments", StringComparison.OrdinalIgnoreCase))
             {
                 return MaxUploadBodyBytes;
+            }
+            if (string.Equals(path, "/api/web-search", StringComparison.OrdinalIgnoreCase))
+            {
+                return MaxWebSearchBodyBytes;
             }
             return MaxJsonBodyBytes;
         }
@@ -1624,6 +2360,11 @@ namespace KivrioChat
         private const long MaxPdfAttachmentBytes = 20L * 1024L * 1024L;
         private const long MaxTextAttachmentBytes = 2L * 1024L * 1024L;
         private const long MaxAttachmentTotalBytes = 25L * 1024L * 1024L;
+        private const int MaxWebSourceCount = 5;
+        private const int MaxWebSourceTitleChars = 180;
+        private const int MaxWebSourceUrlChars = 500;
+        private const int MaxWebSourceSnippetChars = 700;
+        private const int MaxWebSourceSourceChars = 120;
         private readonly object _lock = new object();
         private readonly string _dataDir;
         private readonly string _storePath;
@@ -1640,6 +2381,7 @@ namespace KivrioChat
             Directory.CreateDirectory(_dataDir);
             Directory.CreateDirectory(_uploadsDir);
             _data = Load();
+            RefreshRecoveryBackupFromActiveStore();
         }
 
         public Dictionary<string, object> GetSystemPrompt()
@@ -1727,7 +2469,7 @@ namespace KivrioChat
                 {
                     if (conversation.folderId == id) conversation.folderId = null;
                 }
-                Save();
+                SaveAfterUserDeletion();
                 return true;
             }
         }
@@ -1820,7 +2562,7 @@ namespace KivrioChat
                 if (conversation == null) return false;
                 List<AttachmentRecord> removedAttachments = DetachAttachmentsForConversation(id);
                 _data.conversations.Remove(conversation);
-                Save();
+                SaveAfterUserDeletion();
                 DeleteAttachmentFiles(removedAttachments);
                 return true;
             }
@@ -1844,6 +2586,7 @@ namespace KivrioChat
                     reasoningText = GetNullableString(body, "reasoning_text") ?? GetNullableString(body, "reasoningText"),
                     model = GetNullableString(body, "model"),
                     reasoningDurationMs = GetNullableLong(body, "reasoning_duration_ms") ?? GetNullableLong(body, "reasoningDurationMs"),
+                    webSources = GetWebSources(body),
                     createdAt = now,
                     position = conversation.messages.Count,
                     attachmentIds = GetStringList(body, "attachment_ids")
@@ -1869,6 +2612,7 @@ namespace KivrioChat
                 if (body.ContainsKey("role")) message.role = CleanRole(GetString(body, "role", message.role));
                 if (body.ContainsKey("reasoning_text")) message.reasoningText = GetNullableString(body, "reasoning_text");
                 if (body.ContainsKey("reasoningText")) message.reasoningText = GetNullableString(body, "reasoningText");
+                if (body.ContainsKey("web_sources") || body.ContainsKey("webSources")) message.webSources = GetWebSources(body);
                 List<AttachmentRecord> removedAttachmentsAfterSave = null;
                 if (body.ContainsKey("truncate_following") && GetBool(body, "truncate_following"))
                 {
@@ -2009,6 +2753,20 @@ namespace KivrioChat
             DurableFile.WriteAllTextAtomically(_storePath, _json.Serialize(data), Encoding.UTF8);
         }
 
+        private void SaveAfterUserDeletion()
+        {
+            string content = _json.Serialize(_data);
+            Directory.CreateDirectory(_dataDir);
+            DurableFile.WriteAllTextAtomically(_storePath, content, Encoding.UTF8);
+            DurableFile.WriteAllTextAtomicallyWithoutBackup(_storePath + ".bak", content, Encoding.UTF8);
+        }
+
+        private void RefreshRecoveryBackupFromActiveStore()
+        {
+            if (!File.Exists(_storePath)) return;
+            DurableFile.WriteAllTextAtomicallyWithoutBackup(_storePath + ".bak", _json.Serialize(_data), Encoding.UTF8);
+        }
+
         private AppData NormalizeLoadedStore(AppData data, bool backupBeforeMigration)
         {
             return NormalizeLoadedStore(data, backupBeforeMigration, true);
@@ -2047,6 +2805,7 @@ namespace KivrioChat
                 {
                     MessageRecord message = conversation.messages[i];
                     if (message.attachmentIds == null) message.attachmentIds = new List<string>();
+                    message.webSources = NormalizeWebSources(message.webSources);
                     message.position = i;
                 }
             }
@@ -2211,10 +2970,28 @@ namespace KivrioChat
                 { "reasoningText", message.reasoningText },
                 { "model", message.model },
                 { "reasoningDurationMs", message.reasoningDurationMs },
+                { "webSources", SerializeWebSources(message.webSources) },
                 { "createdAt", message.createdAt },
                 { "position", message.position },
                 { "attachments", SerializeAttachmentsForMessage(message.id) }
             };
+        }
+
+        private static List<Dictionary<string, object>> SerializeWebSources(List<WebSourceRecord> sources)
+        {
+            var output = new List<Dictionary<string, object>>();
+            foreach (WebSourceRecord source in NormalizeWebSources(sources))
+            {
+                output.Add(new Dictionary<string, object>
+                {
+                    { "index", source.index },
+                    { "title", source.title },
+                    { "url", source.url },
+                    { "snippet", source.snippet },
+                    { "source", source.source }
+                });
+            }
+            return output;
         }
 
         private List<Dictionary<string, object>> SerializeAttachmentsForMessage(string messageId)
@@ -2451,6 +3228,131 @@ namespace KivrioChat
             return null;
         }
 
+        private static List<WebSourceRecord> GetWebSources(Dictionary<string, object> body)
+        {
+            object value;
+            if (body == null) return new List<WebSourceRecord>();
+            if (!body.TryGetValue("web_sources", out value) && !body.TryGetValue("webSources", out value))
+            {
+                return new List<WebSourceRecord>();
+            }
+
+            object[] array = value as object[];
+            if (array == null) return new List<WebSourceRecord>();
+
+            var output = new List<WebSourceRecord>();
+            foreach (object item in array)
+            {
+                if (output.Count >= MaxWebSourceCount) break;
+                var source = item as Dictionary<string, object>;
+                if (source == null) continue;
+
+                string url = NormalizeWebSourceUrl(GetString(source, "url", ""));
+                if (url.Length == 0) continue;
+
+                string title = CleanWebSourceText(GetString(source, "title", url), MaxWebSourceTitleChars);
+                string snippet = CleanWebSourceText(GetString(source, "snippet", GetString(source, "content", "")), MaxWebSourceSnippetChars);
+                string engine = CleanWebSourceText(GetString(source, "source", GetString(source, "engine", "")), MaxWebSourceSourceChars);
+
+                output.Add(new WebSourceRecord
+                {
+                    index = output.Count + 1,
+                    title = title.Length == 0 ? url : title,
+                    url = url,
+                    snippet = snippet,
+                    source = engine
+                });
+            }
+            return output;
+        }
+
+        private static List<WebSourceRecord> NormalizeWebSources(List<WebSourceRecord> sources)
+        {
+            var output = new List<WebSourceRecord>();
+            if (sources == null) return output;
+
+            foreach (WebSourceRecord source in sources)
+            {
+                if (output.Count >= MaxWebSourceCount) break;
+                if (source == null) continue;
+
+                string url = NormalizeWebSourceUrl(source.url);
+                if (url.Length == 0) continue;
+
+                string title = CleanWebSourceText(source.title, MaxWebSourceTitleChars);
+                output.Add(new WebSourceRecord
+                {
+                    index = output.Count + 1,
+                    title = title.Length == 0 ? url : title,
+                    url = url,
+                    snippet = CleanWebSourceText(source.snippet, MaxWebSourceSnippetChars),
+                    source = CleanWebSourceText(source.source, MaxWebSourceSourceChars)
+                });
+            }
+            return output;
+        }
+
+        private static string NormalizeWebSourceUrl(string raw)
+        {
+            Uri uri;
+            if (!Uri.TryCreate((raw ?? "").Trim(), UriKind.Absolute, out uri)) return "";
+            if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) return "";
+            return LimitWebSourceText(uri.ToString(), MaxWebSourceUrlChars);
+        }
+
+        private static string CleanWebSourceText(string raw, int maxLength)
+        {
+            string decoded = WebUtility.HtmlDecode(raw ?? "");
+            var builder = new StringBuilder();
+            bool insideTag = false;
+            foreach (char ch in decoded)
+            {
+                if (ch == '<')
+                {
+                    insideTag = true;
+                    continue;
+                }
+                if (ch == '>')
+                {
+                    insideTag = false;
+                    continue;
+                }
+                if (!insideTag)
+                {
+                    builder.Append(ch);
+                }
+            }
+            return LimitWebSourceText(CollapseWebSourceWhitespace(builder.ToString()), maxLength);
+        }
+
+        private static string CollapseWebSourceWhitespace(string value)
+        {
+            var builder = new StringBuilder();
+            bool previousWasWhitespace = false;
+            foreach (char ch in value ?? "")
+            {
+                if (char.IsWhiteSpace(ch))
+                {
+                    if (!previousWasWhitespace)
+                    {
+                        builder.Append(' ');
+                        previousWasWhitespace = true;
+                    }
+                    continue;
+                }
+                builder.Append(ch);
+                previousWasWhitespace = false;
+            }
+            return builder.ToString().Trim();
+        }
+
+        private static string LimitWebSourceText(string value, int maxLength)
+        {
+            string text = (value ?? "").Trim();
+            if (maxLength <= 0 || text.Length <= maxLength) return text;
+            return text.Substring(0, maxLength).Trim();
+        }
+
         private static List<string> GetStringList(Dictionary<string, object> body, string key)
         {
             var output = new List<string>();
@@ -2506,9 +3408,19 @@ namespace KivrioChat
         public string reasoningText { get; set; }
         public string model { get; set; }
         public long? reasoningDurationMs { get; set; }
+        public List<WebSourceRecord> webSources { get; set; }
         public long createdAt { get; set; }
         public int position { get; set; }
         public List<string> attachmentIds { get; set; }
+    }
+
+    public sealed class WebSourceRecord
+    {
+        public int index { get; set; }
+        public string title { get; set; }
+        public string url { get; set; }
+        public string snippet { get; set; }
+        public string source { get; set; }
     }
 
     public sealed class AttachmentRecord

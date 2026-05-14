@@ -1,0 +1,10 @@
+# Allowed future runtime bundle paths.
+# The audit test checks these anchors exist in the packaging contract.
+
+runtime/python/**
+integrations/searxng/vendor/searxng/**
+integrations/searxng/config/**
+integrations/searxng/client/**
+integrations/searxng/launcher/**
+integrations/searxng/packaging/**
+integrations/searxng/README.md

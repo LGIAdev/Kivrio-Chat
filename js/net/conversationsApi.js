@@ -76,6 +76,19 @@ export function saveSystemPrompt(prompt) {
   });
 }
 
+export function webSearch(query, { maxResults = null, signal = null } = {}) {
+  const body = { query: query == null ? '' : String(query) };
+  if (maxResults != null) {
+    body.max_results = Number(maxResults);
+  }
+  const options = {
+    method: 'POST',
+    body,
+  };
+  if (signal) options.signal = signal;
+  return request('/api/web-search', options);
+}
+
 export function getConversation(id) {
   return request(`/api/conversations/${encodeURIComponent(id)}`);
 }
@@ -164,6 +177,13 @@ export function setupPassword(password) {
 
 export function logout() {
   return request('/api/auth/logout', {
+    method: 'POST',
+    body: {},
+  });
+}
+
+export function shutdownLocalServer() {
+  return request('/api/shutdown', {
     method: 'POST',
     body: {},
   });

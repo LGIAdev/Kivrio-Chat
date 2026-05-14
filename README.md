@@ -7,12 +7,13 @@ Kivrio Chat is a local chat interface for working with local AI models via [Olla
 It provides a desktop-style web UI with Markdown rendering, file-aware conversations, local session authentication, and a fully local JSON persistence layer.
 
 Status: project under active development.
-Version: Kivrio Chat 2026.5.10.
+Version: Kivrio Chat 2026.5.12.
 
 ---
 
 ## Releases
 
+- [Kivrio Chat 2026.5.12](releases/Kivrio-Chat-2026.5.12.md)
 - [Kivrio Chat 2026.5.10](releases/Kivrio-Chat-2026.5.10.md)
 
 ---
@@ -35,6 +36,7 @@ It is separate from Kivrio and Kivrio Agent UI, with its own launcher, local por
 - Local Windows backend serving both the UI and the API
 - Local session authentication
 - Direct file reading for supported multimodal models
+- Local Web Search integration through a managed SearXNG runtime when present
 
 ---
 
@@ -47,6 +49,7 @@ Kivrio Chat now runs as a local application made of:
 - a browser UI served from the same local server
 - local Ollama models running outside Kivrio Chat
 - direct file reading for supported multimodal models
+- optional local Web Search runtime files that are kept out of the source repository
 
 Conversation data is stored locally in:
 
@@ -86,6 +89,13 @@ Make sure Ollama is installed locally and running, for example on:
 `http://127.0.0.1:11434`
 
 For image files, Kivrio Chat keeps file upload support for compatible multimodal models.
+
+### Stopping Kivrio Chat
+
+Use **Deconnexion** in the Kivrio Chat interface to leave the application cleanly.
+This closes the local session, asks the local server to stop, and lets the backend clean up Web Search runtime state.
+
+Closing only the browser tab closes the visible interface, but it does not guarantee that the local server process will stop.
 
 ### Authentication
 
@@ -132,6 +142,9 @@ Important local paths:
 - `data/auth.json`: local authentication record
 - `data/uploads/`: conversation attachments
 - `bin/kivrio-chat-server.exe`: generated local server binary
+- `runtime/python/`: optional local Python runtime, not committed to Git
+- `integrations/searxng/vendor/searxng/`: optional local SearXNG runtime, not committed to Git
+- `assets/vendor/katex/`: optional local KaTeX payload, not committed to Git except its placeholder
 
 Operational notes:
 
@@ -171,6 +184,7 @@ Durability notes:
 - `css/`: styles
 - `bin/kivrio-chat-server.exe`: compiled local server, generated on demand or during packaging
 - `data/kivrio-chat.json`: local conversation store
+- `integrations/searxng/`: Web Search integration code, packaging checks, and optional runtime mount points
 
 ---
 
@@ -183,6 +197,7 @@ Durability notes:
 - [x] Sidebar rename/delete actions
 - [x] File uploads for supported multimodal models
 - [x] Local session authentication
+- [x] Local Web Search integration
 - [ ] Voice input/output
 
 ---

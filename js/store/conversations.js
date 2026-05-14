@@ -50,8 +50,35 @@ function normalizeAttachment(raw) {
   };
 }
 
+function normalizeWebSourceUrl(value) {
+  try {
+    const url = new URL(String(value || '').trim());
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+    return url.href;
+  } catch (_) {
+    return '';
+  }
+}
+
+function normalizeWebSource(raw, fallbackIndex = 0) {
+  if (!raw) return null;
+  const url = normalizeWebSourceUrl(raw.url);
+  if (!url) return null;
+  return {
+    index: Number(raw.index ?? fallbackIndex) || fallbackIndex || 0,
+    title: String(raw.title ?? url).trim() || url,
+    url,
+    snippet: String(raw.snippet ?? raw.content ?? '').trim(),
+    source: String(raw.source ?? raw.engine ?? '').trim(),
+  };
+}
+
 function normalizeMessage(raw) {
   if (!raw) return null;
+  const rawWebSources = raw.webSources ?? raw.web_sources;
+  const webSources = Array.isArray(rawWebSources)
+    ? rawWebSources.map((item, index) => normalizeWebSource(item, index + 1)).filter(Boolean)
+    : [];
   return {
     id: raw.id ?? null,
     conversationId: raw.conversationId ?? raw.conversation_id ?? null,
@@ -65,6 +92,7 @@ function normalizeMessage(raw) {
     createdAt: Number(raw.createdAt ?? raw.created_at ?? Date.now()),
     position: Number(raw.position ?? 0),
     attachments: Array.isArray(raw.attachments) ? raw.attachments.map(normalizeAttachment).filter(Boolean) : [],
+    webSources,
   };
 }
 
@@ -244,6 +272,7 @@ async function openConversation(id) {
       messageId: message.id,
       conversationId: message.conversationId,
       attachments: message.attachments || [],
+      webSources: message.webSources || [],
       reasoningText: message.reasoningText,
       model: message.model,
       reasoningDurationMs: message.reasoningDurationMs,
@@ -337,6 +366,7 @@ export const Store = {
       reasoning_text: options.reasoningText || null,
       model: options.model || null,
       reasoning_duration_ms: options.reasoningDurationMs || null,
+      web_sources: Array.isArray(options.webSources) ? options.webSources : [],
     }));
     let conversation = this.get(id);
     if (!conversation) {

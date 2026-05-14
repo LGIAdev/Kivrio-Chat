@@ -1,0 +1,42 @@
+{
+  "name": "kivrio-chat-web-search-runtime",
+  "manifest_version": 1,
+  "bundle_version": "0.0.0-example",
+  "created_at": "YYYY-MM-DDTHH:mm:ssZ",
+  "source": "internal-prepared-runtime",
+  "runtime": {
+    "python": {
+      "path": "runtime/python/python.exe",
+      "implementation": "CPython minimal runtime",
+      "version": "3.x",
+      "notes": "Only execution files required by Kivrio Chat Web Search should be present."
+    },
+    "searxng": {
+      "path": "integrations/searxng/vendor/searxng/",
+      "version": "x.y.z",
+      "notes": "Only SearXNG runtime code and required data files should be present."
+    }
+  },
+  "size_bytes": 0,
+  "licenses": [],
+  "included_paths": [
+    "runtime/python/",
+    "integrations/searxng/vendor/searxng/",
+    "integrations/searxng/config/",
+    "integrations/searxng/client/",
+    "integrations/searxng/launcher/"
+  ],
+  "excluded_paths": [
+    "__pycache__/",
+    ".git/",
+    ".github/",
+    "tests/",
+    "docs/",
+    "node_modules/",
+    "build/",
+    "dist/",
+    "pip-cache/",
+    ".venv/",
+    "venv/"
+  ]
+}

@@ -1,0 +1,22 @@
+use_default_settings: true
+
+general:
+  instance_name: "Kivrio Chat Search"
+
+search:
+  formats:
+    - html
+    - json
+  default_lang: "auto"
+  safe_search: 0
+
+server:
+  bind_address: "127.0.0.1"
+  secret_key: "KIVRIO_CHAT_GENERATE_AT_RUNTIME"
+  public_instance: false
+  limiter: false
+  image_proxy: false
+
+outgoing:
+  request_timeout: 3.0
+  max_request_timeout: 10.0

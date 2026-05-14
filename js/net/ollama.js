@@ -5,6 +5,7 @@ import { bindMessageRecord, renderMsg, updateBubbleContent } from '../chat/rende
 import { Store, fmtTitle, mountHistory } from '../store/conversations.js';
 import { qs } from '../core/dom.js';
 import {
+  consumeWebSearchSelection,
   detachPendingUploads,
   getPendingUploads,
   preparePendingUploadsForSend,
@@ -15,6 +16,7 @@ import {
   getSystemPrompt,
   saveSystemPrompt,
   uploadConversationAttachments,
+  webSearch,
 } from './conversationsApi.js';
 import { assistantErrorMessage, showToast, userMessageForError } from '../ui/errors.js';
 
@@ -47,6 +49,12 @@ const GENERATE_ANSWER_PATHS = [
   'response',
   'message.content',
 ];
+const WEB_SEARCH_UNAVAILABLE_MESSAGE = 'La recherche Web est momentan\u00e9ment indisponible. Vous pouvez r\u00e9essayer ou continuer sans recherche Web.';
+const WEB_SEARCH_UNAVAILABLE_ASSISTANT_MESSAGE = 'Je ne peux pas effectuer la recherche Web actuellement. R\u00e9essayez dans quelques instants ou d\u00e9sactivez Recherche Web pour continuer sans sources Web.';
+const WEB_SEARCH_CONTEXT_MAX_RESULTS = 5;
+const WEB_SEARCH_CONTEXT_TITLE_MAX = 180;
+const WEB_SEARCH_CONTEXT_SNIPPET_MAX = 700;
+const WEB_SEARCH_CONTEXT_SOURCE_MAX = 120;
 let isSendInFlight = false;
 let systemPrompt = '';
 let systemPromptLoadPromise = null;
@@ -354,7 +362,109 @@ function buildEffectiveSystemPrompt(sys, userText, convId, extraGuidance = '') {
   return [base, addition].filter(Boolean).join('\n\n');
 }
 
-function buildChatMessages({ sys, convId, userText, maxPast = 16, images = [], extraSystemGuidance = '' }) {
+function cleanWebSearchContextText(value, maxLength) {
+  const text = String(value == null ? '' : value)
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/\s+([.,;:!?])/g, '$1')
+    .trim();
+  if (!maxLength || text.length <= maxLength) return text;
+  return text.slice(0, Math.max(0, maxLength - 1)).trimEnd() + '...';
+}
+
+function normalizeWebSearchContextUrl(value) {
+  try {
+    const url = new URL(String(value || '').trim());
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+    return url.href;
+  } catch (_) {
+    return '';
+  }
+}
+
+export function buildWebSearchPromptContext(payload, { maxResults = WEB_SEARCH_CONTEXT_MAX_RESULTS } = {}) {
+  if (!payload?.available) {
+    return { available: false, sources: [], promptContext: '' };
+  }
+
+  const results = Array.isArray(payload.results) ? payload.results : [];
+  const seenUrls = new Set();
+  const sources = [];
+  const limit = Math.max(0, Number(maxResults) || WEB_SEARCH_CONTEXT_MAX_RESULTS);
+
+  for (const result of results) {
+    if (sources.length >= limit) break;
+
+    const url = normalizeWebSearchContextUrl(result?.url);
+    if (!url) continue;
+
+    const dedupeKey = url.toLowerCase();
+    if (seenUrls.has(dedupeKey)) continue;
+    seenUrls.add(dedupeKey);
+
+    const title = cleanWebSearchContextText(result?.title || url, WEB_SEARCH_CONTEXT_TITLE_MAX);
+    const snippet = cleanWebSearchContextText(result?.content || result?.snippet || '', WEB_SEARCH_CONTEXT_SNIPPET_MAX);
+    const source = cleanWebSearchContextText(result?.engine || result?.source || '', WEB_SEARCH_CONTEXT_SOURCE_MAX);
+
+    sources.push({
+      index: sources.length + 1,
+      title,
+      url,
+      snippet,
+      source,
+    });
+  }
+
+  if (!sources.length) {
+    return { available: false, sources: [], promptContext: '' };
+  }
+
+  const lines = ['Contexte Web:'];
+  for (const source of sources) {
+    lines.push('');
+    lines.push(`[${source.index}] ${source.title}`);
+    if (source.source) lines.push(`Source: ${source.source}`);
+    lines.push(`URL: ${source.url}`);
+    if (source.snippet) lines.push(`Extrait: ${source.snippet}`);
+  }
+
+  return {
+    available: true,
+    sources,
+    promptContext: lines.join('\n'),
+  };
+}
+
+export function buildPromptWithWebSearchContext(userPrompt, webPromptContext) {
+  const prompt = String(userPrompt || '').trim();
+  const context = String(webPromptContext || '').trim();
+  if (!context) return prompt;
+
+  return [
+    'Question utilisateur:',
+    prompt,
+    '',
+    context,
+    '',
+    'Consignes de reponse:',
+    '- Reponds a la question en utilisant le contexte Web quand il est pertinent.',
+    '- Cite les affirmations issues du Web avec les references [1], [2], etc.',
+    '- Si les sources ne suffisent pas, indique clairement les limites.',
+  ].join('\n');
+}
+
+export function buildWebSearchUnavailableAssistantMessage(message = '') {
+  const detail = String(message || '').trim();
+  if (!detail || detail === WEB_SEARCH_UNAVAILABLE_MESSAGE) return WEB_SEARCH_UNAVAILABLE_ASSISTANT_MESSAGE;
+  return `${WEB_SEARCH_UNAVAILABLE_ASSISTANT_MESSAGE}\n\nDetail technique: ${detail}`;
+}
+
+export function shouldBlockModelForUnavailableWebSearch(webSearchRequested, webPromptContext) {
+  if (!webSearchRequested || webPromptContext?.aborted) return false;
+  return !String(webPromptContext?.promptContext || '').trim();
+}
+
+function buildChatMessages({ sys, convId, userText, historyUserText = userText, maxPast = 16, images = [], extraSystemGuidance = '' }) {
   const out = [];
   const history = toChatHistory(readHistory(convId));
   const effectiveSys = buildEffectiveSystemPrompt(sys, userText, convId, extraSystemGuidance);
@@ -362,7 +472,7 @@ function buildChatMessages({ sys, convId, userText, maxPast = 16, images = [], e
   let hist = history.slice();
   if (hist.length) {
     const last = hist[hist.length - 1];
-    if (last.role === 'user' && last.content === userText) {
+    if (last.role === 'user' && last.content === historyUserText) {
       hist = hist.slice(0, -1);
     }
   }
@@ -378,8 +488,15 @@ function buildChatMessages({ sys, convId, userText, maxPast = 16, images = [], e
   return out;
 }
 
-function buildGeneratePrompt({ sys, convId, userText, maxPast = 16, extraSystemGuidance = '' }) {
-  const history = toChatHistory(readHistory(convId)).slice(-maxPast);
+function buildGeneratePrompt({ sys, convId, userText, historyUserText = userText, maxPast = 16, extraSystemGuidance = '' }) {
+  let history = toChatHistory(readHistory(convId));
+  if (history.length) {
+    const last = history[history.length - 1];
+    if (last.role === 'user' && last.content === historyUserText) {
+      history = history.slice(0, -1);
+    }
+  }
+  history = history.slice(-maxPast);
   const parts = [];
   const effectiveSys = buildEffectiveSystemPrompt(sys, userText, convId, extraSystemGuidance);
   if (effectiveSys) parts.push(`System:\n${effectiveSys}`);
@@ -391,11 +508,11 @@ function buildGeneratePrompt({ sys, convId, userText, maxPast = 16, extraSystemG
   return parts.join('\n\n');
 }
 
-export async function* streamChat({ base, model, sys, prompt, convId, maxPast = 16, images = [], extraSystemGuidance = '', signal = null }) {
+export async function* streamChat({ base, model, sys, prompt, convId, historyUserText = prompt, maxPast = 16, images = [], extraSystemGuidance = '', signal = null }) {
   throwIfAborted(signal);
   const body = {
     model,
-    messages: buildChatMessages({ sys, convId, userText: prompt, maxPast, images, extraSystemGuidance }),
+    messages: buildChatMessages({ sys, convId, userText: prompt, historyUserText, maxPast, images, extraSystemGuidance }),
     stream: true,
   };
   const res = await fetch(base + '/api/chat', {
@@ -406,7 +523,7 @@ export async function* streamChat({ base, model, sys, prompt, convId, maxPast = 
   });
 
   if ((res.status === 404 || res.status === 400) && !images.length) {
-    return yield* streamGenerate({ base, model, sys, prompt, convId, maxPast, extraSystemGuidance, signal });
+    return yield* streamGenerate({ base, model, sys, prompt, convId, historyUserText, maxPast, extraSystemGuidance, signal });
   }
   if (!res.ok) throw new Error('HTTP ' + res.status);
 
@@ -439,7 +556,7 @@ export async function* streamChat({ base, model, sys, prompt, convId, maxPast = 
   } catch (_) {}
 }
 
-export async function* streamGenerate({ base, model, sys, prompt, convId, maxPast = 16, extraSystemGuidance = '', signal = null }) {
+export async function* streamGenerate({ base, model, sys, prompt, convId, historyUserText = prompt, maxPast = 16, extraSystemGuidance = '', signal = null }) {
   throwIfAborted(signal);
   const effectiveSys = buildEffectiveSystemPrompt(sys, prompt, convId, extraSystemGuidance);
   const res = await fetch(base + '/api/generate', {
@@ -448,7 +565,7 @@ export async function* streamGenerate({ base, model, sys, prompt, convId, maxPas
     body: JSON.stringify({
       model,
       system: effectiveSys || undefined,
-      prompt: buildGeneratePrompt({ sys, convId, userText: prompt, maxPast, extraSystemGuidance }),
+      prompt: buildGeneratePrompt({ sys, convId, userText: prompt, historyUserText, maxPast, extraSystemGuidance }),
       stream: true,
     }),
     signal,
@@ -503,6 +620,7 @@ function renderConversationSnapshot(conversation) {
       messageId: message.id,
       conversationId: message.conversationId,
       attachments: message.attachments || [],
+      webSources: message.webSources || [],
       reasoningText: message.reasoningText,
       model: message.model,
       reasoningDurationMs: message.reasoningDurationMs,
@@ -517,6 +635,45 @@ function setSendButtonBusy(isBusy) {
   btn.classList.toggle('is-busy', isBusy);
   btn.setAttribute('aria-busy', isBusy ? 'true' : 'false');
   btn.title = isBusy ? 'Traitement en cours...' : '';
+}
+
+async function resolveWebSearchPromptContextForCurrentMessage(query, { signal = null } = {}) {
+  const trimmed = String(query || '').trim();
+  if (!trimmed) {
+    return {
+      available: false,
+      sources: [],
+      promptContext: '',
+      assistantMessage: buildWebSearchUnavailableAssistantMessage(),
+    };
+  }
+
+  try {
+    const payload = await webSearch(trimmed, { maxResults: WEB_SEARCH_CONTEXT_MAX_RESULTS, signal });
+    const context = buildWebSearchPromptContext(payload);
+    if (context.available) return context;
+
+    const message = String(payload?.message || WEB_SEARCH_UNAVAILABLE_MESSAGE).trim();
+    if (message) {
+      showToast(message, { tone: 'info' });
+    }
+    return {
+      available: false,
+      sources: [],
+      promptContext: '',
+      assistantMessage: buildWebSearchUnavailableAssistantMessage(),
+    };
+  } catch (err) {
+    if (isAbortError(err)) return { available: false, sources: [], promptContext: '', aborted: true };
+    const message = userMessageForError(err, WEB_SEARCH_UNAVAILABLE_MESSAGE);
+    showToast(message, { tone: 'info' });
+    return {
+      available: false,
+      sources: [],
+      promptContext: '',
+      assistantMessage: buildWebSearchUnavailableAssistantMessage(),
+    };
+  }
 }
 
 export async function regenerateFromEditedMessage({ conversationId, messageId, content }) {
@@ -656,6 +813,7 @@ export async function sendCurrent() {
   try {
     const userBubble = renderMsg('user', text, { attachments: localAttachments });
     ta.value = '';
+    const webSearchRequested = consumeWebSearchSelection();
 
     if (window.kivrioEnsureConversationPromise) {
       try { await window.kivrioEnsureConversationPromise; } catch (_) {}
@@ -734,6 +892,36 @@ export async function sendCurrent() {
     }
     if (!isCurrentRequest(streamRequest)) return;
 
+    let promptForModel = prepared.promptText || text;
+    let webSourcesForAssistant = [];
+    if (webSearchRequested) {
+      const webPromptContext = await resolveWebSearchPromptContextForCurrentMessage(text, {
+        signal: streamRequest.controller.signal,
+      });
+      if (webPromptContext.aborted) return;
+      if (webPromptContext.promptContext) {
+        promptForModel = buildPromptWithWebSearchContext(promptForModel, webPromptContext.promptContext);
+        webSourcesForAssistant = Array.isArray(webPromptContext.sources) ? webPromptContext.sources : [];
+      } else if (shouldBlockModelForUnavailableWebSearch(webSearchRequested, webPromptContext)) {
+        const message = webPromptContext.assistantMessage || buildWebSearchUnavailableAssistantMessage();
+        if (!aiB) {
+          aiB = renderMsg('assistant', message, { model });
+        } else {
+          renderAssistantChunk(aiB, { answerText: message, reasoningText: '', reasoningDurationMs: null }, { model });
+        }
+        if (convId) {
+          const savedAssistantMessage = await Store.addMsg(convId, 'assistant', message, {
+            model,
+            webSources: [],
+          });
+          bindMessageRecord(aiB, savedAssistantMessage);
+        }
+        try { await mountHistory(); } catch (_) {}
+        return;
+      }
+    }
+    if (!isCurrentRequest(streamRequest)) return;
+
     try {
       await Store.renameIfDefault(convId, fmtTitle(prepared.suggestedTitle || text || 'Piece jointe'));
     } catch (_) {}
@@ -748,7 +936,8 @@ export async function sendCurrent() {
         base,
         model,
         sys,
-        prompt: prepared.promptText || text,
+        prompt: promptForModel,
+        historyUserText: text,
         convId,
         images: prepared.imagePayloads || [],
         signal: streamRequest.controller.signal,
@@ -757,18 +946,19 @@ export async function sendCurrent() {
         mergeAssistantStreamChunk(assistantState, chunk);
         const livePayload = buildAssistantPayload(assistantState, { live: true });
         if (!livePayload.answerText.trim() && !livePayload.reasoningText.trim()) continue;
-        renderAssistantChunk(aiB, livePayload, { model });
+        renderAssistantChunk(aiB, livePayload, { model, webSources: webSourcesForAssistant });
       }
       if (!isCurrentRequest(streamRequest)) return;
       const finalPayload = finalizeAssistantStreamState(assistantState);
       if (finalPayload.answerText.trim() || finalPayload.reasoningText.trim()) {
-        renderAssistantChunk(aiB, finalPayload, { model });
+        renderAssistantChunk(aiB, finalPayload, { model, webSources: webSourcesForAssistant });
       }
       if (convId && (finalPayload.answerText.trim() || finalPayload.reasoningText.trim())) {
         const savedAssistantMessage = await Store.addMsg(convId, 'assistant', finalPayload.answerText, {
           reasoningText: finalPayload.reasoningText,
           model,
           reasoningDurationMs: finalPayload.reasoningDurationMs,
+          webSources: webSourcesForAssistant,
         });
         bindMessageRecord(aiB, savedAssistantMessage);
       }

@@ -128,11 +128,29 @@
 <div class="composer-dock">
 <div class="composer-card">
   <div class="composer-header">
-    <button class="icon-btn" id="add-btn" title="Ajouter un fichier" type="button" aria-label="Ajouter un fichier">
-      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-      </svg>
-    </button>
+    <div class="composer-tools">
+      <button class="icon-btn" id="add-btn" title="Ajouter" type="button" aria-label="Ouvrir le menu d'ajout" aria-haspopup="menu" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <div class="composer-add-menu" id="composer-add-menu" role="menu" aria-label="Options d'ajout" hidden>
+        <button class="composer-add-menu-item" id="add-file-menu-item" type="button" role="menuitem">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7z" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M14 2v5h5M12 18v-6M9 15h6" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span>Ajouter des fichiers</span>
+        </button>
+        <button class="composer-add-menu-item" id="web-search-menu-item" type="button" role="menuitemcheckbox" aria-checked="false">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" stroke="currentColor"/>
+            <path d="M3 12h18M12 3a14 14 0 0 1 3.2 9A14 14 0 0 1 12 21a14 14 0 0 1-3.2-9A14 14 0 0 1 12 3z" stroke="currentColor" stroke-linecap="round"/>
+          </svg>
+          <span>Recherche Web</span>
+        </button>
+      </div>
+    </div>
     <div class="actions">
       <button class="icon-btn" id="mic-btn" title="Micro (a venir)" type="button">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -151,6 +169,14 @@
   </div>
 
   <textarea id="composer-input" class="composer-input" placeholder="Entrez votre question" rows="1" wrap="soft"></textarea>
+  <div id="web-search-indicator" class="web-search-indicator" hidden>
+    <span>Recherche Web</span>
+    <button type="button" id="web-search-clear" aria-label="Desactiver Recherche Web">
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M18 6 6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+    </button>
+  </div>
   <input type="file" id="file-input" class="file-input-proxy" multiple accept=".jpg,.jpeg,.png,.webp,.pdf,.txt,.md" />
   <div id="composer-attachments" class="composer-attachments" aria-live="polite"></div>
   <p id="composer-upload-error" class="composer-upload-error" hidden></p>

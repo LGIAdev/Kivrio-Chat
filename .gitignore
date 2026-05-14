@@ -58,6 +58,22 @@ data/
 # Generated binaries
 bin/
 
+# Third-party payloads kept local only
+assets/vendor/katex/*
+!assets/vendor/katex/.gitkeep
+
+runtime/python/*
+!runtime/python/.gitkeep
+
+integrations/searxng/vendor/searxng/*
+!integrations/searxng/vendor/searxng/.gitkeep
+
+integrations/searxng/runtime/
+integrations/searxng/packaging/backups/
+integrations/searxng/packaging/runtime-manifest.json
+integrations/searxng/**/__pycache__/
+integrations/searxng/**/*.pyc
+
 # Release artifacts
 releases/*
 !releases/
