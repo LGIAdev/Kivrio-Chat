@@ -89,7 +89,7 @@ export async function smokecheckRuntimeLaunch(options = {}) {
       const stop = await runPython(
         runCommand,
         pythonExePath,
-        [stopScriptPath, '--pid-file', pidFilePath],
+        [stopScriptPath, '--pid-file', pidFilePath, '--purge-runtime'],
         path.dirname(stopScriptPath),
         10000,
       );

@@ -39,6 +39,11 @@ doc/
 documentation/
 examples/
 example/
+requirements-dev.txt
+requirements-test.txt
+README.rst
+CHANGELOG*
+CONTRIBUTING*
 
 # Build outputs and source build leftovers
 build/
