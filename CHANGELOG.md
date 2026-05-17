@@ -2,6 +2,18 @@
 
 All notable changes to Kivrio Chat are documented in this file.
 
+## [Kivrio Chat 2026.5.17] - 2026-05-17
+
+### Added
+- Added real sidebar search across conversation history and folders with filters.
+- Added PDF attachment text extraction through local PdfPig libraries.
+- Added a backend safety net runner covering C# backend tests, PDF extraction, and fast Node regressions.
+
+### Changed
+- Hardened attachment validation and multipart upload parsing.
+- Kept third-party payloads and local authentication data out of the source repository.
+- Kept the `v2026.5.10` logout/reconnect pipeline for direct reconnection.
+
 ## [Kivrio Chat 2026.5.10] - 2026-05-10
 
 ### Added

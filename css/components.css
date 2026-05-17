@@ -396,7 +396,7 @@
 .sidebar .side-search{ margin:2px 2px; }
 .sidebar .side-search input{
   display:block; width:100%; max-width:100%; box-sizing:border-box;
-  padding:10px 14px; border-radius:12px;
+  border-radius:12px;
 }
 
 /* ===================== 6) Barre d’invite (composer) =============== */

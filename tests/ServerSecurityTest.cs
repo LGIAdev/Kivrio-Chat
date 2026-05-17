@@ -22,7 +22,10 @@ namespace KivrioChatSecurityTests
 
                 TestTraversalProtection(store);
                 TestStaticTraversalRejected();
+                TestMultipartBoundaryValidation();
+                TestMultipartParserKeepsBoundaryLookalikesInContent();
                 TestMimeRejections(store);
+                TestAttachmentContentSecurityHeaders();
                 TestCrossConversationAttachmentAccess(store);
                 TestAgentStatusEndpointRemoved();
                 TestWebSearchUnavailableContract();
@@ -86,6 +89,7 @@ namespace KivrioChatSecurityTests
                 var server = new LocalServer(root, "127.0.0.1", 0);
                 HttpResponse publicFile = InvokeServeStatic(server, StaticRequest("/js/app.js"));
                 Assert(publicFile.StatusCode == HttpStatusCode.OK, "public static file should be served");
+                Assert(publicFile.Headers.ContainsKey("Cache-Control"), "static assets should disable browser caching");
 
                 HttpResponse escapedFromJs = InvokeServeStatic(server, StaticRequest("/js/../data/auth.json"));
                 Assert(escapedFromJs.StatusCode == HttpStatusCode.NotFound, "static traversal from js should be rejected");
@@ -102,6 +106,36 @@ namespace KivrioChatSecurityTests
                     Directory.Delete(root, true);
                 }
             }
+        }
+
+        private static void TestMultipartBoundaryValidation()
+        {
+            Assert(MultipartParser.IsSafeBoundary("----WebKitFormBoundaryabc123"), "normal multipart boundary should be accepted");
+            Assert(!MultipartParser.IsSafeBoundary("bad\r\nX-Injected: 1"), "multipart boundary should reject CRLF injection");
+            Assert(!MultipartParser.IsSafeBoundary(new string('a', 201)), "multipart boundary should reject excessive length");
+        }
+
+        private static void TestMultipartParserKeepsBoundaryLookalikesInContent()
+        {
+            Encoding latin1 = Encoding.GetEncoding("iso-8859-1");
+            string boundary = "kivrioBoundary";
+            string body = "--" + boundary + "\r\n"
+                + "Content-Disposition: form-data; name=\"files\"; filename=\"note.txt\"\r\n"
+                + "Content-Type: text/plain\r\n\r\n"
+                + "hello --" + boundary + " inside content\r\n"
+                + "--" + boundary + "\r\n"
+                + "Content-Disposition: form-data; name=\"files\"; filename*=UTF-8''rapport%20test.txt\r\n"
+                + "Content-Type: text/plain\r\n\r\n"
+                + "second file\r\n"
+                + "--" + boundary + "--\r\n";
+
+            List<UploadedFile> files = MultipartParser.Parse(latin1.GetBytes(body), boundary);
+
+            Assert(files.Count == 2, "multipart parser should keep both files");
+            Assert(files[0].FileName == "note.txt", "multipart parser should read quoted filename");
+            Assert(Encoding.UTF8.GetString(files[0].Content).Contains("--" + boundary + " inside content"), "boundary lookalike inside content should be preserved");
+            Assert(files[1].FileName == "rapport test.txt", "multipart parser should decode UTF-8 filename*");
+            Assert(Encoding.UTF8.GetString(files[1].Content) == "second file", "multipart parser should preserve second file content");
         }
 
         private static void TestMimeRejections(DataStore store)
@@ -154,6 +188,46 @@ namespace KivrioChatSecurityTests
             var serializedAttachments = message["attachments"] as List<Dictionary<string, object>>;
             Assert(serializedAttachments != null && serializedAttachments.Count == 0, "cross-conversation attachment should not serialize on message");
             Assert(store.GetAttachment(attachmentId).messageId == null, "cross-conversation attachment should not be linked");
+        }
+
+        private static void TestAttachmentContentSecurityHeaders()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "kivrio-chat-attachment-headers-test-" + Guid.NewGuid().ToString("N"));
+            string previousAuthFlag = Environment.GetEnvironmentVariable("KIVRO_DISABLE_AUTH");
+            try
+            {
+                Directory.CreateDirectory(root);
+                Environment.SetEnvironmentVariable("KIVRO_DISABLE_AUTH", "1");
+
+                var server = new LocalServer(root, "127.0.0.1", 8020);
+                DataStore store = GetPrivateStore(server);
+                string conversationId = CreateConversationId(store, "Attachment headers test");
+                List<Dictionary<string, object>> attachments = store.CreateAttachments(conversationId, new List<UploadedFile>
+                {
+                    UploadFile("safe.txt", "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("<b>not html</b>"))
+                });
+                string attachmentId = Convert.ToString(attachments[0]["id"]);
+
+                HttpResponse content = InvokeRouteApi(server, StaticRequest("/api/attachments/" + attachmentId + "/content"));
+                Assert(content.StatusCode == HttpStatusCode.OK, "text attachment content should be served");
+                Assert(content.ContentType == "text/plain; charset=utf-8", "text attachment should be served as plain text");
+                Assert(content.Headers.ContainsKey("Content-Disposition"), "text attachment should force download");
+                Assert(content.Headers["Content-Disposition"].Contains("attachment"), "content disposition should be attachment");
+                Assert(content.Headers.ContainsKey("X-Download-Options"), "download response should include noopen hint");
+                Assert(content.Headers.ContainsKey("Cache-Control"), "attachment response should disable caching");
+                Assert(ResponseText(content).Contains("<b>not html</b>"), "plain text response should preserve file bytes");
+
+                HttpResponse view = InvokeRouteApi(server, StaticRequest("/api/attachments/" + attachmentId + "/view"));
+                Assert(view.StatusCode == HttpStatusCode.BadRequest, "non-image preview route should be rejected");
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("KIVRO_DISABLE_AUTH", previousAuthFlag);
+                if (Directory.Exists(root))
+                {
+                    Directory.Delete(root, true);
+                }
+            }
         }
 
         private static void TestAgentStatusEndpointRemoved()
@@ -1102,6 +1176,13 @@ namespace KivrioChatSecurityTests
         {
             MethodInfo serveStatic = typeof(LocalServer).GetMethod("ServeStatic", BindingFlags.Instance | BindingFlags.NonPublic);
             return (HttpResponse)serveStatic.Invoke(server, new object[] { request });
+        }
+
+        private static DataStore GetPrivateStore(LocalServer server)
+        {
+            FieldInfo field = typeof(LocalServer).GetField("_store", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert(field != null, "server store field should exist");
+            return (DataStore)field.GetValue(server);
         }
 
         private static string ResponseText(HttpResponse response)

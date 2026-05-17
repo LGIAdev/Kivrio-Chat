@@ -1,5 +1,5 @@
 import { mountHistory, Store } from '../store/conversations.js';
-import { getAuthStatus, login, logout, setupPassword, shutdownLocalServer } from '../net/conversationsApi.js';
+import { getAuthStatus, login, logout, setupPassword } from '../net/conversationsApi.js';
 import { userMessageForError } from '../ui/errors.js';
 
 const OVERLAY_ID = 'kivrio-login-overlay';
@@ -200,11 +200,7 @@ export function wireLogout() {
 
   const doLogout = async (e) => {
     if (e) e.preventDefault();
-    try {
-      await shutdownLocalServer();
-    } catch (_) {
-      try { await logout(); } catch (_) {}
-    }
+    try { await logout(); } catch (_) {}
     try { Store.clearCurrent(); } catch (_) {}
     setupRequired = false;
     renderLoginSplash('Session fermee.');

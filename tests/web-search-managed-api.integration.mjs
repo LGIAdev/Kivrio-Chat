@@ -4,14 +4,19 @@ import { existsSync } from 'node:fs';
 import { readFile, rm } from 'node:fs/promises';
 import http from 'node:http';
 import net from 'node:net';
-import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import {
+  backendTempDir,
+  backendTestEnv,
+  ensureBackendTempDir,
+  findCsc,
+  pdfPigReferences,
+  repoRoot,
+} from './backend-test-utils.mjs';
 
 const execFileAsync = promisify(execFile);
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const serverExe = path.join(os.tmpdir(), 'KivrioChatPhase20Server.exe');
+const serverExe = path.join(backendTempDir, 'KivrioChatPhase20Server.exe');
 const pidFile = path.join(repoRoot, 'integrations', 'searxng', 'runtime', 'searxng.pid');
 const pythonExe = path.join(repoRoot, 'runtime', 'python', 'python.exe');
 const stopScript = path.join(repoRoot, 'integrations', 'searxng', 'launcher', 'stop_searxng.py');
@@ -61,6 +66,7 @@ try {
 }
 
 async function compileServer() {
+  await ensureBackendTempDir();
   const csc = findCsc();
   assert(csc, 'csc.exe should be available to compile the local server');
   await execFileAsync(csc, [
@@ -68,21 +74,14 @@ async function compileServer() {
     '/target:exe',
     `/out:${serverExe}`,
     '/r:System.Web.Extensions.dll',
+    ...pdfPigReferences(),
     path.join(repoRoot, 'server', 'KivrioChatServer.cs'),
   ], {
     cwd: repoRoot,
+    env: backendTestEnv(),
     windowsHide: true,
     maxBuffer: 1024 * 1024,
   });
-}
-
-function findCsc() {
-  const windir = process.env.WINDIR || 'C:\\Windows';
-  const candidates = [
-    path.join(windir, 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe'),
-    path.join(windir, 'Microsoft.NET', 'Framework', 'v4.0.30319', 'csc.exe'),
-  ];
-  return candidates.find((candidate) => existsSync(candidate)) || '';
 }
 
 function startServer(port) {

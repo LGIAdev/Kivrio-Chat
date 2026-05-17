@@ -6,6 +6,7 @@ set "PORT_START=8020"
 set "PORT_END=8029"
 set "SERVER_EXE=%ROOT%\bin\kivrio-chat-server.exe"
 set "SERVER_SRC=%ROOT%\server\KivrioChatServer.cs"
+set "PDFPIG_LIB=%ROOT%\server\lib\pdfpig"
 set "WAIT_SECONDS=30"
 
 call :needs_compile
@@ -62,7 +63,22 @@ if not defined CSC (
   exit /b 1
 )
 if not exist "%ROOT%\bin" mkdir "%ROOT%\bin"
-"%CSC%" /nologo /target:winexe /platform:anycpu /optimize+ /out:"%SERVER_EXE%" /r:System.Web.Extensions.dll "%SERVER_SRC%"
+"%CSC%" /nologo /target:winexe /platform:anycpu /optimize+ /out:"%SERVER_EXE%" ^
+  /r:System.Web.Extensions.dll ^
+  /r:"%PDFPIG_LIB%\UglyToad.PdfPig.dll" ^
+  /r:"%PDFPIG_LIB%\UglyToad.PdfPig.Core.dll" ^
+  /r:"%PDFPIG_LIB%\UglyToad.PdfPig.DocumentLayoutAnalysis.dll" ^
+  /r:"%PDFPIG_LIB%\UglyToad.PdfPig.Fonts.dll" ^
+  /r:"%PDFPIG_LIB%\UglyToad.PdfPig.Package.dll" ^
+  /r:"%PDFPIG_LIB%\UglyToad.PdfPig.Tokenization.dll" ^
+  /r:"%PDFPIG_LIB%\UglyToad.PdfPig.Tokens.dll" ^
+  /r:"%PDFPIG_LIB%\Microsoft.Bcl.HashCode.dll" ^
+  /r:"%PDFPIG_LIB%\System.Buffers.dll" ^
+  /r:"%PDFPIG_LIB%\System.Memory.dll" ^
+  /r:"%PDFPIG_LIB%\System.Numerics.Vectors.dll" ^
+  /r:"%PDFPIG_LIB%\System.Runtime.CompilerServices.Unsafe.dll" ^
+  /r:"%PDFPIG_LIB%\System.ValueTuple.dll" ^
+  "%SERVER_SRC%"
 if errorlevel 1 (
   echo [ERREUR] Compilation du serveur autonome impossible.
   exit /b 1

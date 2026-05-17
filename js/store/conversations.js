@@ -21,6 +21,9 @@ let foldersCache = [];
 let openFolders = new Set();
 let activeMenu = null;
 let menuEventsBound = false;
+let sidebarSearchQuery = '';
+let sidebarSearchFilter = 'all';
+let sidebarSearchShortcutBound = false;
 
 function sortCache() {
   cache.sort((a, b) => (b.updatedAt - a.updatedAt) || (b.createdAt - a.createdAt));
@@ -44,8 +47,10 @@ function normalizeAttachment(raw) {
     mimeType: String(raw.mimeType ?? raw.mime_type ?? 'application/octet-stream'),
     sizeBytes: Number(raw.sizeBytes ?? raw.size_bytes ?? 0),
     url: raw.url ?? null,
+    textUrl: raw.textUrl ?? raw.text_url ?? null,
     previewUrl: raw.previewUrl ?? raw.preview_url ?? raw.url ?? null,
     isImage: Boolean(raw.isImage ?? raw.is_image ?? String(raw.mimeType ?? raw.mime_type ?? '').startsWith('image/')),
+    isPdf: Boolean(raw.isPdf ?? raw.is_pdf ?? String(raw.mimeType ?? raw.mime_type ?? '').toLowerCase().startsWith('application/pdf')),
     status: String(raw.status ?? 'stored'),
   };
 }
@@ -530,10 +535,223 @@ function listFolderNames() {
   return Store.folders().map((folder) => folder.name);
 }
 
+function normalizeSearchText(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLocaleLowerCase('fr');
+}
+
+function compactSearchText(value, maxLength = 96) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (text.length <= maxLength) return text;
+  return text.slice(0, Math.max(0, maxLength - 1)).trimEnd() + '…';
+}
+
+function conversationSearchText(conversation) {
+  const parts = [conversation?.title || ''];
+  for (const message of (conversation?.messages || [])) {
+    parts.push(message?.content || '');
+    for (const attachment of (message?.attachments || [])) {
+      parts.push(attachment?.filename || '');
+    }
+  }
+  return parts.join(' ');
+}
+
+function conversationSearchSnippet(conversation, normalizedQuery) {
+  for (const message of (conversation?.messages || [])) {
+    const content = message?.content || '';
+    if (content && normalizeSearchText(content).includes(normalizedQuery)) {
+      return compactSearchText(content);
+    }
+    const attachment = (message?.attachments || []).find((item) => normalizeSearchText(item?.filename).includes(normalizedQuery));
+    if (attachment) {
+      return compactSearchText('Fichier joint : ' + attachment.filename);
+    }
+  }
+  const count = conversationCount(conversation);
+  return count > 0 ? `${count} message${count > 1 ? 's' : ''}` : 'Conversation';
+}
+
+export function getSidebarSearchMatches({ query = '', filter = 'all', conversations = [], folders = [] } = {}) {
+  const normalizedQuery = normalizeSearchText(query).trim();
+  if (!normalizedQuery) return [];
+
+  const mode = ['all', 'history', 'folders'].includes(filter) ? filter : 'all';
+  const results = [];
+
+  if (mode === 'all' || mode === 'history') {
+    for (const conversation of conversations || []) {
+      if (!conversation || conversation.archived || conversationCount(conversation) <= 0) continue;
+      if (!normalizeSearchText(conversationSearchText(conversation)).includes(normalizedQuery)) continue;
+      results.push({
+        type: 'history',
+        id: conversation.id,
+        title: conversation.title || 'Nouvelle conversation',
+        snippet: conversationSearchSnippet(conversation, normalizedQuery),
+        conversation,
+      });
+    }
+  }
+
+  if (mode === 'all' || mode === 'folders') {
+    for (const folder of folders || []) {
+      if (!folder || !normalizeSearchText(folder.name).includes(normalizedQuery)) continue;
+      const count = Number(folder.conversationCount || 0);
+      results.push({
+        type: 'folders',
+        id: folder.id,
+        title: 'Dossier : ' + folder.name,
+        snippet: `${count} conversation${count > 1 ? 's' : ''}`,
+        folder,
+      });
+    }
+  }
+
+  return results.slice(0, 40);
+}
+
 export async function mountHistory() {
   const cont = qs('#history');
   if (!cont) return;
   ensureMenuEvents();
+  bindSidebarSearchControls();
+
+  function bindSidebarSearchControls() {
+    const input = qs('#history-search');
+    const buttons = Array.from(document.querySelectorAll('[data-search-filter]'));
+
+    if (input && !input.dataset.bound) {
+      input.dataset.bound = '1';
+      input.addEventListener('input', () => {
+        sidebarSearchQuery = input.value || '';
+        render({ refresh: false });
+      });
+    }
+
+    for (const button of buttons) {
+      if (button.dataset.bound) continue;
+      button.dataset.bound = '1';
+      button.addEventListener('click', () => {
+        sidebarSearchFilter = button.dataset.searchFilter || 'all';
+        render({ refresh: false });
+      });
+    }
+
+    if (!sidebarSearchShortcutBound) {
+      sidebarSearchShortcutBound = true;
+      document.addEventListener('keydown', (event) => {
+        const key = String(event.key || '').toLowerCase();
+        if (key !== 'k' || (!event.ctrlKey && !event.metaKey)) return;
+        const target = event.target;
+        if (target && /^(input|textarea|select)$/i.test(target.tagName || '')) return;
+        const searchInput = qs('#history-search');
+        if (!searchInput) return;
+        event.preventDefault();
+        searchInput.focus();
+        searchInput.select();
+      });
+    }
+
+    syncSidebarSearchControls();
+  }
+
+  function syncSidebarSearchControls() {
+    const input = qs('#history-search');
+    if (input && input.value !== sidebarSearchQuery) {
+      input.value = sidebarSearchQuery;
+    }
+    for (const button of Array.from(document.querySelectorAll('[data-search-filter]'))) {
+      button.classList.toggle('active', (button.dataset.searchFilter || 'all') === sidebarSearchFilter);
+    }
+  }
+
+  function visibleConversationList(folderMap) {
+    return Store.load()
+      .filter((conversation) => !conversation.archived && conversationCount(conversation) > 0)
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .map((conversation) => (
+        folderMap?.has(conversation.folderId)
+          ? { ...conversation, folderName: folderMap.get(conversation.folderId).name }
+          : conversation
+      ));
+  }
+
+  async function hydrateSearchableConversations(conversations) {
+    if (!sidebarSearchQuery.trim() || sidebarSearchFilter === 'folders') return;
+    const pending = conversations
+      .filter((conversation) => conversation?.id && !conversation.messagesLoaded)
+      .map((conversation) => Store.ensureLoaded(conversation.id).catch((err) => {
+        console.warn('[history] searchable conversation load failed', err);
+        return null;
+      }));
+    if (pending.length) await Promise.all(pending);
+  }
+
+  function buildSearchResultRow(result) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'search-result';
+    if (result.type === 'history' && Store.currentId() === result.id) {
+      button.classList.add('selected');
+    }
+
+    const icon = result.type === 'folders' ? createFolderIcon() : createConversationIcon();
+    const body = document.createElement('div');
+
+    const title = document.createElement('div');
+    title.className = 'search-result-title';
+    title.textContent = result.title;
+
+    const snippet = document.createElement('div');
+    snippet.className = 'search-result-snippet';
+    snippet.textContent = result.snippet || '';
+
+    body.append(title, snippet);
+    button.append(icon, body);
+
+    button.addEventListener('click', async (event) => {
+      event.preventDefault();
+      closeActiveMenu();
+      if (result.type === 'folders' && result.folder?.id) {
+        openFolders.add(result.folder.id);
+        sidebarSearchQuery = '';
+        syncSidebarSearchControls();
+        await render({ refresh: false });
+        return;
+      }
+      if (result.type === 'history' && result.conversation?.id) {
+        try {
+          await openConversation(result.conversation.id);
+          await render({ refresh: false });
+        } catch (err) {
+          console.warn('[history] open search result failed', err);
+        }
+      }
+    });
+
+    return button;
+  }
+
+  function renderSearchResults(results) {
+    const head = document.createElement('div');
+    head.className = 'side-title';
+    head.textContent = `${results.length} resultat${results.length > 1 ? 's' : ''}`;
+    cont.appendChild(head);
+
+    if (!results.length) {
+      const empty = document.createElement('div');
+      empty.className = 'search-empty';
+      empty.textContent = 'Aucun resultat dans l historique ou les dossiers.';
+      cont.appendChild(empty);
+      return;
+    }
+
+    for (const result of results) {
+      cont.appendChild(buildSearchResultRow(result));
+    }
+  }
 
   const render = async ({ refresh = true } = {}) => {
     if (refresh) {
@@ -564,12 +782,33 @@ export async function mountHistory() {
 
     closeActiveMenu();
     cont.innerHTML = '';
+    syncSidebarSearchControls();
 
-    const allFolders = Store.folders();
-    const visibleConversations = Store.load()
-      .filter((conversation) => !conversation.archived && conversationCount(conversation) > 0)
-      .sort((a, b) => b.updatedAt - a.updatedAt);
+    let allFolders = Store.folders();
     const folderMap = new Map(allFolders.map((folder) => [folder.id, folder]));
+    let visibleConversations = visibleConversationList(folderMap);
+    await hydrateSearchableConversations(visibleConversations);
+    visibleConversations = visibleConversationList(folderMap);
+    const folderCounts = new Map();
+    for (const conversation of visibleConversations) {
+      if (!conversation.folderId) continue;
+      folderCounts.set(conversation.folderId, (folderCounts.get(conversation.folderId) || 0) + 1);
+    }
+    allFolders = allFolders.map((folder) => ({
+      ...folder,
+      conversationCount: folderCounts.get(folder.id) || 0,
+    }));
+    const searchQuery = sidebarSearchQuery.trim();
+    if (searchQuery) {
+      renderSearchResults(getSidebarSearchMatches({
+        query: searchQuery,
+        filter: sidebarSearchFilter,
+        conversations: visibleConversations,
+        folders: allFolders,
+      }));
+      return;
+    }
+
     const rootConversations = visibleConversations.filter((conversation) => !conversation.folderId || !folderMap.has(conversation.folderId));
 
     function buildMovePrompt(conversation) {

@@ -145,6 +145,13 @@ export async function uploadConversationAttachments(id, files) {
   return Array.isArray(payload?.attachments) ? payload.attachments : [];
 }
 
+export function getAttachmentText(attachment) {
+  const textUrl = attachment && typeof attachment === 'object' ? attachment.textUrl : '';
+  const id = attachment && typeof attachment === 'object' ? attachment.id : attachment;
+  const path = textUrl || `/api/attachments/${encodeURIComponent(String(id || ''))}/text`;
+  return request(path);
+}
+
 export function deleteConversation(id) {
   return request(`/api/conversations/${encodeURIComponent(id)}`, {
     method: 'DELETE',

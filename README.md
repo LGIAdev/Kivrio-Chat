@@ -7,12 +7,13 @@ Kivrio Chat is a local chat interface for working with local AI models via [Olla
 It provides a desktop-style web UI with Markdown rendering, file-aware conversations, local session authentication, and a fully local JSON persistence layer.
 
 Status: project under active development.
-Version: Kivrio Chat 2026.5.12.1.
+Version: Kivrio Chat 2026.5.17.
 
 ---
 
 ## Releases
 
+- [Kivrio Chat 2026.5.17](releases/Kivrio-Chat-2026.5.17.md)
 - [Kivrio Chat 2026.5.12.1](releases/Kivrio-Chat-2026.5.12.1.md)
 - [Kivrio Chat 2026.5.12](releases/Kivrio-Chat-2026.5.12.md)
 - [Kivrio Chat 2026.5.10](releases/Kivrio-Chat-2026.5.10.md)
@@ -32,11 +33,13 @@ It is separate from Kivrio and Kivrio Agent UI, with its own launcher, local por
 - Dark/light theme support
 - Markdown rendering with KaTeX
 - Conversation history in the left sidebar
+- Real sidebar search across conversation history and folders
 - Persistent local storage of conversations in a JSON file
 - Rename and delete actions for conversation links
 - Local Windows backend serving both the UI and the API
 - Local session authentication
 - Direct file reading for supported multimodal models
+- PDF text extraction for uploaded PDF attachments when local PdfPig libraries are present
 - Local Web Search integration through a managed SearXNG runtime when present
 
 ---
@@ -51,6 +54,7 @@ Kivrio Chat now runs as a local application made of:
 - local Ollama models running outside Kivrio Chat
 - direct file reading for supported multimodal models
 - optional local Web Search runtime files that are kept out of the source repository
+- optional local PDF extraction libraries kept out of the source repository
 
 Conversation data is stored locally in:
 
@@ -97,6 +101,16 @@ Use **Deconnexion** in the Kivrio Chat interface to leave the application cleanl
 This closes the local session, asks the local server to stop, and lets the backend clean up Web Search runtime state.
 
 Closing only the browser tab closes the visible interface, but it does not guarantee that the local server process will stop.
+
+### Backend safety net
+
+Before backend changes, run the local safety net:
+
+```powershell
+node .\tests\run-backend-safety-net.mjs
+```
+
+It compiles and runs the C# backend tests with the local PdfPig dependencies, runs the fast API/client regression tests, and fails if a new Kivrio process is left running after the suite.
 
 ### Authentication
 

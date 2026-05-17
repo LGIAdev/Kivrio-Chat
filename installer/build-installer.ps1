@@ -108,6 +108,22 @@ $iconPath = Join-Path $projectRoot 'assets\kivrio-chat.ico'
 $installerStub = Join-Path $projectRoot 'installer\KivrioChatSetupStub.cs'
 $serverSource = Join-Path $projectRoot 'server\KivrioChatServer.cs'
 $serverExe = Join-Path $packageRoot 'bin\kivrio-chat-server.exe'
+$pdfPigLib = Join-Path $projectRoot 'server\lib\pdfpig'
+$pdfPigDllNames = @(
+    'UglyToad.PdfPig.dll',
+    'UglyToad.PdfPig.Core.dll',
+    'UglyToad.PdfPig.DocumentLayoutAnalysis.dll',
+    'UglyToad.PdfPig.Fonts.dll',
+    'UglyToad.PdfPig.Package.dll',
+    'UglyToad.PdfPig.Tokenization.dll',
+    'UglyToad.PdfPig.Tokens.dll',
+    'Microsoft.Bcl.HashCode.dll',
+    'System.Buffers.dll',
+    'System.Memory.dll',
+    'System.Numerics.Vectors.dll',
+    'System.Runtime.CompilerServices.Unsafe.dll',
+    'System.ValueTuple.dll'
+)
 $csharpCompiler = Get-CSharpCompiler
 
 if (-not (Test-Path -LiteralPath $iconPath)) {
@@ -116,6 +132,13 @@ if (-not (Test-Path -LiteralPath $iconPath)) {
 
 if (-not (Test-Path -LiteralPath $serverSource)) {
     throw "Serveur autonome introuvable: $serverSource"
+}
+
+foreach ($dllName in $pdfPigDllNames) {
+    $dllPath = Join-Path $pdfPigLib $dllName
+    if (-not (Test-Path -LiteralPath $dllPath)) {
+        throw "Dependance PDF introuvable: $dllPath"
+    }
 }
 
 if (Test-Path -LiteralPath $outputRoot) {
@@ -150,13 +173,17 @@ foreach ($item in $itemsToCopy) {
 
 $serverExeParent = Split-Path -Parent $serverExe
 New-Item -ItemType Directory -Path $serverExeParent -Force | Out-Null
+$pdfPigReferences = foreach ($dllName in $pdfPigDllNames) {
+    '/r:' + (Join-Path $pdfPigLib $dllName)
+}
 $serverCompilerArgs = @(
     '/nologo',
     '/target:winexe',
     '/platform:anycpu',
     '/optimize+',
     "/out:$serverExe",
-    '/r:System.Web.Extensions.dll',
+    '/r:System.Web.Extensions.dll'
+) + $pdfPigReferences + @(
     $serverSource
 )
 

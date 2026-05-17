@@ -74,6 +74,9 @@ integrations/searxng/packaging/runtime-manifest.json
 integrations/searxng/**/__pycache__/
 integrations/searxng/**/*.pyc
 
+server/lib/*
+!server/lib/.gitkeep
+
 # Release artifacts
 releases/*
 !releases/

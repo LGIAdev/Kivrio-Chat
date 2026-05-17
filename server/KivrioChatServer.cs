@@ -4,10 +4,13 @@ using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
+using UglyToad.PdfPig;
+using UglyToad.PdfPig.DocumentLayoutAnalysis.TextExtractor;
 
 namespace KivrioChat
 {
@@ -25,6 +28,137 @@ namespace KivrioChat
         public UploadValidationException(HttpStatusCode statusCode, string message) : base(message)
         {
             StatusCode = statusCode;
+        }
+    }
+
+    internal static class LocalDependencyResolver
+    {
+        private static readonly object LockObject = new object();
+        private static string _pdfPigDirectory;
+        private static bool _registered;
+
+        public static void Register(string root)
+        {
+            lock (LockObject)
+            {
+                if (!string.IsNullOrWhiteSpace(root))
+                {
+                    _pdfPigDirectory = Path.Combine(Path.GetFullPath(root), "server", "lib", "pdfpig");
+                }
+
+                if (_registered)
+                {
+                    return;
+                }
+
+                AppDomain.CurrentDomain.AssemblyResolve += ResolveAssembly;
+                _registered = true;
+            }
+        }
+
+        private static Assembly ResolveAssembly(object sender, ResolveEventArgs args)
+        {
+            string directory = _pdfPigDirectory;
+            if (string.IsNullOrWhiteSpace(directory))
+            {
+                return null;
+            }
+
+            string assemblyName = new AssemblyName(args.Name).Name + ".dll";
+            string candidate = Path.Combine(directory, assemblyName);
+            if (!File.Exists(candidate))
+            {
+                return null;
+            }
+
+            return Assembly.LoadFrom(candidate);
+        }
+    }
+
+    internal sealed class PdfTextExtractionResult
+    {
+        public int PageCount;
+        public string Text;
+        public bool Truncated;
+    }
+
+    internal static class PdfTextExtractor
+    {
+        public static PdfTextExtractionResult ExtractText(string filePath, int maxChars)
+        {
+            if (string.IsNullOrWhiteSpace(filePath))
+            {
+                throw new InvalidOperationException("Fichier PDF introuvable.");
+            }
+
+            int limit = Math.Max(1, maxChars);
+            var builder = new StringBuilder();
+            bool truncated = false;
+            int pageCount;
+
+            using (PdfDocument document = PdfDocument.Open(filePath))
+            {
+                pageCount = document.NumberOfPages;
+                bool firstPage = true;
+                foreach (var page in document.GetPages())
+                {
+                    if (!firstPage)
+                    {
+                        AppendLimited(builder, "\n\n", limit, ref truncated);
+                    }
+
+                    firstPage = false;
+                    string pageText = ExtractPageText(page);
+                    AppendLimited(builder, pageText, limit, ref truncated);
+                    if (truncated)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            return new PdfTextExtractionResult
+            {
+                PageCount = pageCount,
+                Text = builder.ToString().Trim(),
+                Truncated = truncated
+            };
+        }
+
+        private static string ExtractPageText(UglyToad.PdfPig.Content.Page page)
+        {
+            try
+            {
+                return ContentOrderTextExtractor.GetText(page, true) ?? "";
+            }
+            catch
+            {
+                return page == null ? "" : (page.Text ?? "");
+            }
+        }
+
+        private static void AppendLimited(StringBuilder builder, string value, int maxChars, ref bool truncated)
+        {
+            if (builder == null || truncated || string.IsNullOrEmpty(value))
+            {
+                return;
+            }
+
+            int remaining = maxChars - builder.Length;
+            if (remaining <= 0)
+            {
+                truncated = true;
+                return;
+            }
+
+            if (value.Length <= remaining)
+            {
+                builder.Append(value);
+                return;
+            }
+
+            builder.Append(value.Substring(0, remaining));
+            truncated = true;
         }
     }
 
@@ -74,6 +208,7 @@ namespace KivrioChat
             return ex is InvalidOperationException
                 && (message == "Content-Length invalide."
                     || message == "Boundary multipart introuvable."
+                    || message == "Boundary multipart invalide."
                     || message.StartsWith("Le mot de passe doit contenir au moins ", StringComparison.Ordinal)
                     || message.StartsWith("Le mot de passe ne peut pas depasser ", StringComparison.Ordinal));
         }
@@ -229,6 +364,54 @@ namespace KivrioChat
             }
         }
 
+        public static void WriteAllBytesAtomically(string path, byte[] content)
+        {
+            string directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            string tempPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                {
+                    byte[] bytes = content ?? new byte[0];
+                    stream.Write(bytes, 0, bytes.Length);
+                    stream.Flush(true);
+                }
+
+                if (File.Exists(path))
+                {
+                    File.Replace(tempPath, path, null, true);
+                }
+                else
+                {
+                    File.Move(tempPath, path);
+                }
+            }
+            catch
+            {
+                TryDeleteFile(tempPath);
+                throw;
+            }
+        }
+
+        private static void TryDeleteFile(string path)
+        {
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+            catch
+            {
+            }
+        }
+
         public static void BackupCorruptFile(string path)
         {
             try
@@ -328,6 +511,7 @@ namespace KivrioChat
             }
 
             root = Path.GetFullPath(root);
+            LocalDependencyResolver.Register(root);
             var server = new LocalServer(root, host, port);
             ServerLog.Info("server_start", new Dictionary<string, object>
             {
@@ -379,6 +563,7 @@ namespace KivrioChat
         private const int WebSearchHealthcheckTimeoutMs = 1000;
         private const int SearxngLauncherTimeoutMs = 30000;
         private const int SearxngStopTimeoutMs = 10000;
+        private const int PdfExtractedTextMaxChars = 200000;
         private const string WebSearchBaseUrlEnv = "KIVRIO_WEB_SEARCH_BASE_URL";
         private const string WebSearchEnableManagedEnv = "KIVRIO_WEB_SEARCH_ENABLE_MANAGED";
         private const string WebSearchAllowMockEnv = "KIVRIO_WEB_SEARCH_ALLOW_MOCK";
@@ -1367,6 +1552,11 @@ namespace KivrioChat
 
             if (parts[3] == "view")
             {
+                if (!IsImageAttachment(attachment))
+                {
+                    return JsonError(HttpStatusCode.BadRequest, "Apercu disponible uniquement pour les images.");
+                }
+
                 string html = "<!doctype html><html><head><meta charset=\"utf-8\"><title>" +
                     HtmlEscape(attachment.filename) +
                     "</title><style>body{margin:0;background:#0f172a;display:grid;place-items:center;min-height:100vh}img{max-width:96vw;max-height:96vh;background:white}</style></head><body><img src=\"/api/attachments/" +
@@ -1379,10 +1569,105 @@ namespace KivrioChat
 
             if (parts[3] == "content")
             {
-                return new HttpResponse(HttpStatusCode.OK, attachment.mimeType ?? "application/octet-stream", File.ReadAllBytes(filePath));
+                HttpResponse response = new HttpResponse(HttpStatusCode.OK, AttachmentContentType(attachment), File.ReadAllBytes(filePath));
+                response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate";
+                if (!IsImageAttachment(attachment))
+                {
+                    response.Headers["Content-Disposition"] = BuildAttachmentContentDisposition(attachment.filename);
+                    response.Headers["X-Download-Options"] = "noopen";
+                }
+                return response;
+            }
+
+            if (parts[3] == "text")
+            {
+                return RouteAttachmentText(attachment, filePath);
             }
 
             return JsonError(HttpStatusCode.NotFound, "Piece jointe introuvable.");
+        }
+
+        private HttpResponse RouteAttachmentText(AttachmentRecord attachment, string filePath)
+        {
+            if (!IsPdfAttachment(attachment))
+            {
+                return JsonError(HttpStatusCode.BadRequest, "Extraction texte disponible uniquement pour les PDF.");
+            }
+
+            try
+            {
+                PdfTextExtractionResult result = PdfTextExtractor.ExtractText(filePath, PdfExtractedTextMaxChars);
+                return Json(new Dictionary<string, object>
+                {
+                    { "ok", true },
+                    { "attachmentId", attachment.id },
+                    { "filename", attachment.filename },
+                    { "pageCount", result.PageCount },
+                    { "text", result.Text ?? "" },
+                    { "truncated", result.Truncated }
+                });
+            }
+            catch
+            {
+                return JsonError(HttpStatusCode.BadRequest, "Lecture PDF impossible.");
+            }
+        }
+
+        private static bool IsImageAttachment(AttachmentRecord attachment)
+        {
+            return (attachment == null ? "" : (attachment.mimeType ?? "")).StartsWith("image/", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsPdfAttachment(AttachmentRecord attachment)
+        {
+            string mime = attachment == null ? "" : NormalizeAttachmentMime(attachment.mimeType);
+            string ext = Path.GetExtension(attachment == null ? "" : (attachment.filename ?? "")).ToLowerInvariant();
+            return ext == ".pdf" || mime == "application/pdf";
+        }
+
+        private static string AttachmentContentType(AttachmentRecord attachment)
+        {
+            string ext = Path.GetExtension(attachment == null ? "" : (attachment.filename ?? "")).ToLowerInvariant();
+            if (ext == ".jpg" || ext == ".jpeg") return "image/jpeg";
+            if (ext == ".png") return "image/png";
+            if (ext == ".webp") return "image/webp";
+            if (ext == ".pdf") return "application/pdf";
+            if (ext == ".txt" || ext == ".md") return "text/plain; charset=utf-8";
+            return "application/octet-stream";
+        }
+
+        private static string NormalizeAttachmentMime(string contentType)
+        {
+            string mime = (contentType ?? "").Trim().ToLowerInvariant();
+            int semi = mime.IndexOf(';');
+            if (semi >= 0) mime = mime.Substring(0, semi).Trim();
+            return mime;
+        }
+
+        private static string BuildAttachmentContentDisposition(string filename)
+        {
+            return "attachment; filename=\"" + SafeHeaderFileName(filename) + "\"";
+        }
+
+        private static string SafeHeaderFileName(string filename)
+        {
+            string name = Path.GetFileName(filename ?? "attachment");
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                name = "attachment";
+            }
+
+            var builder = new StringBuilder();
+            foreach (char ch in name)
+            {
+                if (ch <= 31 || ch >= 127 || ch == '"' || ch == '\\')
+                {
+                    builder.Append('_');
+                    continue;
+                }
+                builder.Append(ch);
+            }
+            return builder.ToString();
         }
 
         private HttpResponse ServeStatic(HttpRequest request)
@@ -1405,7 +1690,9 @@ namespace KivrioChat
             }
 
             byte[] body = request.Method == "HEAD" ? new byte[0] : File.ReadAllBytes(fullPath);
-            return new HttpResponse(HttpStatusCode.OK, MimeTypeFor(fullPath), body);
+            HttpResponse response = new HttpResponse(HttpStatusCode.OK, MimeTypeFor(fullPath), body);
+            response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate";
+            return response;
         }
 
         private string ResolvePublicStaticPath(string path)
@@ -1490,6 +1777,10 @@ namespace KivrioChat
             if (string.IsNullOrEmpty(boundary))
             {
                 throw new InvalidOperationException("Boundary multipart introuvable.");
+            }
+            if (!MultipartParser.IsSafeBoundary(boundary))
+            {
+                throw new InvalidOperationException("Boundary multipart invalide.");
             }
             return MultipartParser.Parse(request.Body ?? new byte[0], boundary);
         }
@@ -2356,6 +2647,7 @@ namespace KivrioChat
     {
         private const int CurrentStoreSchemaVersion = 1;
         private const int MaxAttachmentCount = 5;
+        private const int MaxAttachmentFileNameChars = 180;
         private const long MaxImageAttachmentBytes = 10L * 1024L * 1024L;
         private const long MaxPdfAttachmentBytes = 20L * 1024L * 1024L;
         private const long MaxTextAttachmentBytes = 2L * 1024L * 1024L;
@@ -2649,33 +2941,49 @@ namespace KivrioChat
                 ValidateAttachments(files);
 
                 var result = new List<Dictionary<string, object>>();
-                foreach (UploadedFile file in files)
+                var createdAttachments = new List<AttachmentRecord>();
+                var createdPaths = new List<string>();
+                try
                 {
-                    if (file == null || file.Content == null) continue;
-                    string id = NewId("a");
-                    string safeName = SafeFileName(file.FileName);
-                    string relativeDir = Path.Combine("uploads", conversationId, id);
-                    string absoluteDir = Path.Combine(_dataDir, relativeDir);
-                    Directory.CreateDirectory(absoluteDir);
-                    string absolutePath = Path.Combine(absoluteDir, safeName);
-                    File.WriteAllBytes(absolutePath, file.Content);
-
-                    var attachment = new AttachmentRecord
+                    foreach (UploadedFile file in files)
                     {
-                        id = id,
-                        conversationId = conversationId,
-                        messageId = null,
-                        filename = safeName,
-                        mimeType = string.IsNullOrWhiteSpace(file.ContentType) ? "application/octet-stream" : file.ContentType,
-                        sizeBytes = file.Content.LongLength,
-                        relativePath = Path.Combine(relativeDir, safeName),
-                        createdAt = NowMs()
-                    };
-                    _data.attachments.Add(attachment);
-                    result.Add(SerializeAttachment(attachment));
+                        if (file == null || file.Content == null) continue;
+                        string id = NewId("a");
+                        string safeName = SafeFileName(file.FileName);
+                        string relativeDir = Path.Combine("uploads", conversationId, id);
+                        string absoluteDir = Path.Combine(_dataDir, relativeDir);
+                        Directory.CreateDirectory(absoluteDir);
+                        string absolutePath = Path.Combine(absoluteDir, safeName);
+                        createdPaths.Add(absolutePath);
+                        DurableFile.WriteAllBytesAtomically(absolutePath, file.Content);
+
+                        var attachment = new AttachmentRecord
+                        {
+                            id = id,
+                            conversationId = conversationId,
+                            messageId = null,
+                            filename = safeName,
+                            mimeType = StoredMimeTypeFor(safeName, file.ContentType),
+                            sizeBytes = file.Content.LongLength,
+                            relativePath = Path.Combine(relativeDir, safeName),
+                            createdAt = NowMs()
+                        };
+                        _data.attachments.Add(attachment);
+                        createdAttachments.Add(attachment);
+                        result.Add(SerializeAttachment(attachment));
+                    }
+                    Save();
+                    return result;
                 }
-                Save();
-                return result;
+                catch
+                {
+                    foreach (AttachmentRecord attachment in createdAttachments)
+                    {
+                        _data.attachments.Remove(attachment);
+                    }
+                    DeleteAttachmentPaths(createdPaths);
+                    throw;
+                }
             }
         }
 
@@ -2886,6 +3194,27 @@ namespace KivrioChat
             }
         }
 
+        private void DeleteAttachmentPaths(List<string> paths)
+        {
+            foreach (string path in paths ?? new List<string>())
+            {
+                try
+                {
+                    if (string.IsNullOrWhiteSpace(path)) continue;
+                    string fullPath = Path.GetFullPath(path);
+                    if (!IsPathInsideDirectory(_uploadsDir, fullPath)) continue;
+                    if (File.Exists(fullPath))
+                    {
+                        File.Delete(fullPath);
+                    }
+                    DeleteEmptyUploadDirectories(Path.GetDirectoryName(fullPath));
+                }
+                catch
+                {
+                }
+            }
+        }
+
         private void DeleteAttachmentFile(AttachmentRecord attachment)
         {
             try
@@ -3010,7 +3339,9 @@ namespace KivrioChat
         private Dictionary<string, object> SerializeAttachment(AttachmentRecord attachment)
         {
             bool isImage = (attachment.mimeType ?? "").StartsWith("image/", StringComparison.OrdinalIgnoreCase);
+            bool isPdf = string.Equals(NormalizeMimeType(attachment.mimeType), "application/pdf", StringComparison.OrdinalIgnoreCase);
             string contentUrl = "/api/attachments/" + Uri.EscapeDataString(attachment.id) + "/content";
+            string textUrl = "/api/attachments/" + Uri.EscapeDataString(attachment.id) + "/text";
             return new Dictionary<string, object>
             {
                 { "id", attachment.id },
@@ -3020,8 +3351,10 @@ namespace KivrioChat
                 { "mimeType", attachment.mimeType },
                 { "sizeBytes", attachment.sizeBytes },
                 { "url", contentUrl },
+                { "textUrl", isPdf ? textUrl : null },
                 { "previewUrl", isImage ? contentUrl : null },
                 { "isImage", isImage },
+                { "isPdf", isPdf },
                 { "status", "stored" }
             };
         }
@@ -3069,6 +3402,30 @@ namespace KivrioChat
             {
                 name = name.Replace(c, '_');
             }
+            var builder = new StringBuilder();
+            foreach (char c in name.Trim())
+            {
+                builder.Append(c < 32 ? '_' : c);
+            }
+
+            name = builder.ToString().Trim();
+            string extension = Path.GetExtension(name);
+            string baseName = Path.GetFileNameWithoutExtension(name).Trim('.', ' ');
+            if (string.IsNullOrWhiteSpace(baseName))
+            {
+                name = "fichier" + extension;
+            }
+            if (name.Length > MaxAttachmentFileNameChars)
+            {
+                extension = Path.GetExtension(name);
+                int baseLimit = Math.Max(1, MaxAttachmentFileNameChars - extension.Length);
+                baseName = Path.GetFileNameWithoutExtension(name);
+                if (baseName.Length > baseLimit)
+                {
+                    baseName = baseName.Substring(0, baseLimit);
+                }
+                name = baseName + extension;
+            }
             return name;
         }
 
@@ -3111,6 +3468,8 @@ namespace KivrioChat
                     throw new UploadValidationException((HttpStatusCode)413, "Fichier trop volumineux: " + safeName);
                 }
 
+                ValidateAttachmentContent(safeName, kind, file.Content);
+
                 totalBytes += size;
                 if (totalBytes > MaxAttachmentTotalBytes)
                 {
@@ -3125,6 +3484,152 @@ namespace KivrioChat
             if (kind == "pdf") return MaxPdfAttachmentBytes;
             if (kind == "text") return MaxTextAttachmentBytes;
             return 0;
+        }
+
+        private static void ValidateAttachmentContent(string safeName, string kind, byte[] content)
+        {
+            if (kind == "image" && !IsExpectedImageContent(safeName, content))
+            {
+                throw new UploadValidationException(HttpStatusCode.BadRequest, "Contenu du fichier invalide: " + safeName);
+            }
+            if (kind == "pdf" && !LooksLikePdf(content))
+            {
+                throw new UploadValidationException(HttpStatusCode.BadRequest, "Contenu du fichier invalide: " + safeName);
+            }
+            if (kind == "text" && !LooksLikeSafeText(content))
+            {
+                throw new UploadValidationException(HttpStatusCode.BadRequest, "Contenu du fichier invalide: " + safeName);
+            }
+        }
+
+        private static bool IsExpectedImageContent(string fileName, byte[] content)
+        {
+            string ext = Path.GetExtension(fileName ?? "").ToLowerInvariant();
+            if (ext == ".jpg" || ext == ".jpeg") return StartsWithBytes(content, new byte[] { 0xFF, 0xD8, 0xFF });
+            if (ext == ".png") return StartsWithBytes(content, new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A });
+            if (ext == ".webp") return StartsWithAscii(content, 0, "RIFF") && StartsWithAscii(content, 8, "WEBP");
+            return false;
+        }
+
+        private static bool LooksLikePdf(byte[] content)
+        {
+            int offset = FirstMeaningfulByteOffset(content, 1024);
+            return StartsWithAscii(content, offset, "%PDF-");
+        }
+
+        private static int FirstMeaningfulByteOffset(byte[] content, int maxScan)
+        {
+            if (content == null || content.Length == 0) return 0;
+            int offset = StartsWithBytes(content, new byte[] { 0xEF, 0xBB, 0xBF }) ? 3 : 0;
+            int limit = Math.Min(content.Length, Math.Max(0, maxScan));
+            while (offset < limit)
+            {
+                byte b = content[offset];
+                if (b != 0x09 && b != 0x0A && b != 0x0C && b != 0x0D && b != 0x20)
+                {
+                    break;
+                }
+                offset++;
+            }
+            return offset;
+        }
+
+        private static bool LooksLikeSafeText(byte[] content)
+        {
+            if (content == null) return false;
+            if (HasBinarySignature(content)) return false;
+
+            string text;
+            try
+            {
+                text = new UTF8Encoding(false, true).GetString(content);
+            }
+            catch
+            {
+                return false;
+            }
+
+            foreach (char ch in text)
+            {
+                if (ch < 32 && ch != '\t' && ch != '\r' && ch != '\n' && ch != '\f')
+                {
+                    return false;
+                }
+            }
+
+            return !ContainsActiveHtml(text);
+        }
+
+        private static bool HasBinarySignature(byte[] content)
+        {
+            return StartsWithBytes(content, new byte[] { 0xFF, 0xD8, 0xFF })
+                || StartsWithBytes(content, new byte[] { 0x89, 0x50, 0x4E, 0x47 })
+                || StartsWithAscii(content, 0, "RIFF")
+                || StartsWithAscii(content, 0, "%PDF-")
+                || StartsWithAscii(content, 0, "MZ")
+                || StartsWithAscii(content, 0, "PK\u0003\u0004")
+                || StartsWithAscii(content, 0, "GIF87a")
+                || StartsWithAscii(content, 0, "GIF89a");
+        }
+
+        private static bool ContainsActiveHtml(string text)
+        {
+            string lower = (text ?? "").ToLowerInvariant();
+            return lower.Contains("<!doctype html")
+                || lower.Contains("<html")
+                || lower.Contains("<script")
+                || lower.Contains("</script")
+                || lower.Contains("<iframe")
+                || lower.Contains("<object")
+                || lower.Contains("<embed")
+                || lower.Contains("<svg")
+                || lower.Contains("javascript:");
+        }
+
+        private static bool StartsWithAscii(byte[] content, int offset, string value)
+        {
+            if (content == null || value == null || offset < 0 || content.Length < offset + value.Length)
+            {
+                return false;
+            }
+            for (int i = 0; i < value.Length; i++)
+            {
+                if (content[offset + i] != (byte)value[i])
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private static bool StartsWithBytes(byte[] content, byte[] prefix)
+        {
+            if (content == null || prefix == null || content.Length < prefix.Length)
+            {
+                return false;
+            }
+            for (int i = 0; i < prefix.Length; i++)
+            {
+                if (content[i] != prefix[i])
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private static string StoredMimeTypeFor(string fileName, string contentType)
+        {
+            string ext = Path.GetExtension(fileName ?? "").ToLowerInvariant();
+            if (ext == ".jpg" || ext == ".jpeg") return "image/jpeg";
+            if (ext == ".png") return "image/png";
+            if (ext == ".webp") return "image/webp";
+            if (ext == ".pdf") return "application/pdf";
+            if (ext == ".md") return "text/markdown";
+            if (ext == ".txt") return "text/plain";
+
+            string mime = NormalizeMimeType(contentType);
+            return string.IsNullOrEmpty(mime) ? "application/octet-stream" : mime;
         }
 
         private static string AttachmentKindFor(string fileName, string contentType)
@@ -3176,17 +3681,23 @@ namespace KivrioChat
 
         private static bool IsTextMimeAllowed(string actual)
         {
-            return string.IsNullOrEmpty(actual)
-                || actual == "application/octet-stream"
-                || actual.StartsWith("text/", StringComparison.OrdinalIgnoreCase);
+            return IsLooseMime(actual)
+                || actual == "text/plain";
         }
 
         private static bool IsMarkdownMimeAllowed(string actual)
         {
-            return IsTextMimeAllowed(actual)
+            return IsLooseMime(actual)
+                || actual == "text/plain"
                 || actual == "application/markdown"
                 || actual == "text/markdown"
                 || actual == "text/x-markdown";
+        }
+
+        private static bool IsLooseMime(string actual)
+        {
+            return string.IsNullOrEmpty(actual)
+                || actual == "application/octet-stream";
         }
 
         private static string GetString(Dictionary<string, object> body, string key, string fallback)
@@ -3446,36 +3957,79 @@ namespace KivrioChat
     {
         private static readonly Encoding Latin1 = Encoding.GetEncoding("iso-8859-1");
 
+        public static bool IsSafeBoundary(string boundary)
+        {
+            if (string.IsNullOrWhiteSpace(boundary) || boundary.Length > 200)
+            {
+                return false;
+            }
+
+            foreach (char ch in boundary)
+            {
+                bool allowed = (ch >= 'a' && ch <= 'z')
+                    || (ch >= 'A' && ch <= 'Z')
+                    || (ch >= '0' && ch <= '9')
+                    || ch == '\''
+                    || ch == '('
+                    || ch == ')'
+                    || ch == '+'
+                    || ch == '_'
+                    || ch == ','
+                    || ch == '-'
+                    || ch == '.'
+                    || ch == '/'
+                    || ch == ':'
+                    || ch == '='
+                    || ch == '?';
+                if (!allowed)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
         public static List<UploadedFile> Parse(byte[] body, string boundary)
         {
             var files = new List<UploadedFile>();
-            string text = Latin1.GetString(body ?? new byte[0]);
-            string marker = "--" + boundary;
-            int position = 0;
+            byte[] bytes = body ?? new byte[0];
+            byte[] marker = Latin1.GetBytes("--" + boundary);
+            byte[] headerSeparator = new byte[] { 13, 10, 13, 10 };
+            int markerIndex = FindNextMarker(bytes, marker, 0);
 
-            while (true)
+            while (markerIndex >= 0)
             {
-                int start = text.IndexOf(marker, position, StringComparison.Ordinal);
-                if (start < 0) break;
-                start += marker.Length;
-                if (start + 1 < text.Length && text.Substring(start, 2) == "--") break;
-                if (start + 1 < text.Length && text.Substring(start, 2) == "\r\n") start += 2;
+                int start = markerIndex + marker.Length;
+                if (StartsWith(bytes, start, new byte[] { 45, 45 })) break;
+                if (StartsWith(bytes, start, new byte[] { 13, 10 }))
+                {
+                    start += 2;
+                }
+                else
+                {
+                    break;
+                }
 
-                int headerEnd = text.IndexOf("\r\n\r\n", start, StringComparison.Ordinal);
+                int headerEnd = IndexOf(bytes, headerSeparator, start);
                 if (headerEnd < 0) break;
                 int contentStart = headerEnd + 4;
-                int next = text.IndexOf(marker, contentStart, StringComparison.Ordinal);
-                if (next < 0) break;
-                int contentEnd = next;
-                if (contentEnd >= 2 && text.Substring(contentEnd - 2, 2) == "\r\n") contentEnd -= 2;
+                int nextMarker = FindNextMarker(bytes, marker, contentStart);
+                if (nextMarker < 0) break;
+                int contentEnd = nextMarker;
+                if (contentEnd >= 2 && bytes[contentEnd - 2] == 13 && bytes[contentEnd - 1] == 10) contentEnd -= 2;
 
-                string headerText = text.Substring(start, headerEnd - start);
-                string contentText = text.Substring(contentStart, Math.Max(0, contentEnd - contentStart));
+                string headerText = Latin1.GetString(bytes, start, headerEnd - start);
+                byte[] content = CopyRange(bytes, contentStart, Math.Max(0, contentEnd - contentStart));
                 var headers = ParseHeaders(headerText);
                 string disposition;
                 if (headers.TryGetValue("Content-Disposition", out disposition))
                 {
                     string fileName = HeaderParameter(disposition, "filename");
+                    if (string.IsNullOrEmpty(fileName))
+                    {
+                        fileName = HeaderParameter(disposition, "filename*");
+                    }
                     if (!string.IsNullOrEmpty(fileName))
                     {
                         string contentType;
@@ -3484,14 +4038,86 @@ namespace KivrioChat
                         {
                             FileName = fileName,
                             ContentType = contentType ?? "application/octet-stream",
-                            Content = Latin1.GetBytes(contentText)
+                            Content = content
                         });
                     }
                 }
-                position = next;
+                markerIndex = nextMarker;
             }
 
             return files;
+        }
+
+        private static int FindNextMarker(byte[] body, byte[] marker, int start)
+        {
+            int index = Math.Max(0, start);
+            while (true)
+            {
+                int found = IndexOf(body, marker, index);
+                if (found < 0)
+                {
+                    return -1;
+                }
+                if (found == 0 || (found >= 2 && body[found - 2] == 13 && body[found - 1] == 10))
+                {
+                    return found;
+                }
+                index = found + 1;
+            }
+        }
+
+        private static int IndexOf(byte[] body, byte[] pattern, int start)
+        {
+            if (body == null || pattern == null || pattern.Length == 0 || body.Length < pattern.Length)
+            {
+                return -1;
+            }
+
+            int limit = body.Length - pattern.Length;
+            for (int i = Math.Max(0, start); i <= limit; i++)
+            {
+                bool match = true;
+                for (int j = 0; j < pattern.Length; j++)
+                {
+                    if (body[i + j] != pattern[j])
+                    {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match)
+                {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        private static bool StartsWith(byte[] body, int offset, byte[] pattern)
+        {
+            if (body == null || pattern == null || offset < 0 || body.Length < offset + pattern.Length)
+            {
+                return false;
+            }
+            for (int i = 0; i < pattern.Length; i++)
+            {
+                if (body[offset + i] != pattern[i])
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private static byte[] CopyRange(byte[] body, int offset, int length)
+        {
+            if (body == null || length <= 0)
+            {
+                return new byte[0];
+            }
+            byte[] copy = new byte[length];
+            Buffer.BlockCopy(body, offset, copy, 0, length);
+            return copy;
         }
 
         private static Dictionary<string, string> ParseHeaders(string text)
@@ -3517,9 +4143,59 @@ namespace KivrioChat
                 if (equals <= 0) continue;
                 string key = part.Substring(0, equals).Trim();
                 if (!key.Equals(name, StringComparison.OrdinalIgnoreCase)) continue;
-                return part.Substring(equals + 1).Trim().Trim('"');
+                return DecodeHeaderParameterValue(part.Substring(equals + 1).Trim());
             }
             return "";
+        }
+
+        private static string DecodeHeaderParameterValue(string value)
+        {
+            string text = value ?? "";
+            if (text.StartsWith("\"", StringComparison.Ordinal) && text.EndsWith("\"", StringComparison.Ordinal) && text.Length >= 2)
+            {
+                text = UnescapeQuotedString(text.Substring(1, text.Length - 2));
+            }
+            int encodingSeparator = text.IndexOf("''", StringComparison.Ordinal);
+            if (encodingSeparator > 0 && encodingSeparator + 2 < text.Length)
+            {
+                string charset = text.Substring(0, encodingSeparator);
+                string encoded = text.Substring(encodingSeparator + 2);
+                if (charset.Equals("utf-8", StringComparison.OrdinalIgnoreCase))
+                {
+                    text = Uri.UnescapeDataString(encoded);
+                }
+            }
+            if (text.IndexOf('\r') >= 0 || text.IndexOf('\n') >= 0 || text.IndexOf('\0') >= 0)
+            {
+                return "";
+            }
+            return text;
+        }
+
+        private static string UnescapeQuotedString(string value)
+        {
+            var builder = new StringBuilder();
+            bool escaped = false;
+            foreach (char ch in value ?? "")
+            {
+                if (escaped)
+                {
+                    builder.Append(ch);
+                    escaped = false;
+                    continue;
+                }
+                if (ch == '\\')
+                {
+                    escaped = true;
+                    continue;
+                }
+                builder.Append(ch);
+            }
+            if (escaped)
+            {
+                builder.Append('\\');
+            }
+            return builder.ToString();
         }
     }
 }

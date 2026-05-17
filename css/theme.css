@@ -86,12 +86,12 @@ body::-webkit-scrollbar-thumb:hover,
   border-color:var(--border);
 }
 :root[data-theme="light"] .side-head .btn:hover{ background:var(--surface-card-hover); }
-:root[data-theme="light"] .side-search input{
+:root[data-theme="light"] .history-search-box{
   color:var(--text);
   background:var(--surface-card);
   border-color:var(--border);
 }
-:root[data-theme="light"] .side-search input::placeholder{ color:#64748b; }
+:root[data-theme="light"] .history-search-box input::placeholder{ color:#64748b; }
 :root[data-theme="light"] .sidebar-toggle{
   background:rgba(255,255,255,.92);
   color:var(--text);

@@ -41,8 +41,19 @@
       <button class="btn" id="new-chat" title="Nouvelle conversation">＋ Nouvelle conversation</button>
       <button class="btn" id="new-folder" title="Nouveau dossier">Nouveau dossier</button>
 	  </div>
-      <div class="side-search">
-        <input placeholder="Recherche" aria-label="Recherche" />
+      <div class="side-search" role="search" aria-label="Recherche dans l'historique et les dossiers">
+        <label class="history-search-box">
+          <svg class="history-search-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M11 18a7 7 0 1 1 4.95-2.05L21 21" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+          </svg>
+          <input id="history-search" placeholder="Recherche" aria-label="Recherche dans l'historique et les dossiers" autocomplete="off" />
+          <span class="history-search-shortcut">Ctrl K</span>
+        </label>
+        <div class="history-search-filters" aria-label="Filtres de recherche">
+          <button class="history-search-filter active" type="button" data-search-filter="all">Tout</button>
+          <button class="history-search-filter" type="button" data-search-filter="history">Historique</button>
+          <button class="history-search-filter" type="button" data-search-filter="folders">Dossiers</button>
+        </div>
       </div>
       <div class="side-section">
         <div id="history"></div>

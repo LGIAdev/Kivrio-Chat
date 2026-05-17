@@ -1,4 +1,5 @@
 import { canModelReadFiles } from '../config/file-capable-models.js';
+import { getAttachmentText } from '../net/conversationsApi.js';
 
 const LIMITS = {
   image: 10 * 1024 * 1024,
@@ -63,7 +64,6 @@ function setError(message = '') {
 function statusLabel(item) {
   if (item.status === 'uploading') return 'Televersement...';
   if (item.status === 'error') return item.error || 'Erreur';
-  if (item.kind === 'pdf') return 'PDF bientot disponible';
   return 'Pret a envoyer';
 }
 
@@ -188,6 +188,64 @@ function appendPromptBlock(promptText, label, blocks) {
 
 function textFragmentsToPromptBlocks(textFragments) {
   return textFragments.map((item) => ['Fichier: ' + item.name, item.content].join('\n'));
+}
+
+function isPdfAttachmentRecord(attachment) {
+  const mime = String(attachment?.mimeType || '').toLowerCase();
+  const name = String(attachment?.filename || '').toLowerCase();
+  return Boolean(attachment?.isPdf) || mime === 'application/pdf' || name.endsWith('.pdf');
+}
+
+function findUploadedAttachmentForItem(item, uploadedAttachments, usedIndexes) {
+  const itemName = String(item?.file?.name || '').toLowerCase();
+  for (let index = 0; index < uploadedAttachments.length; index += 1) {
+    if (usedIndexes.has(index)) continue;
+    const attachment = uploadedAttachments[index];
+    if (!isPdfAttachmentRecord(attachment)) continue;
+    const attachmentName = String(attachment?.filename || '').toLowerCase();
+    if (!itemName || !attachmentName || itemName === attachmentName) {
+      usedIndexes.add(index);
+      return attachment;
+    }
+  }
+  return null;
+}
+
+async function readPdfTextFragments(pdfItems, uploadedAttachments, onStatus) {
+  const fragments = [];
+  const usedIndexes = new Set();
+  const records = Array.isArray(uploadedAttachments) ? uploadedAttachments : [];
+
+  for (const item of pdfItems) {
+    const attachment = findUploadedAttachmentForItem(item, records, usedIndexes);
+    const name = attachment?.filename || item?.file?.name || 'document.pdf';
+    if (!attachment?.id && !attachment?.textUrl) {
+      return {
+        ok: false,
+        message: `Lecture PDF indisponible pour ${name}.`,
+      };
+    }
+
+    try {
+      if (typeof onStatus === 'function') onStatus(`Lecture PDF: ${name}`);
+      const payload = await getAttachmentText(attachment);
+      const content = String(payload?.text || '').trim();
+      if (!content) {
+        return {
+          ok: false,
+          message: `Aucun texte extractible dans ${name}.`,
+        };
+      }
+      fragments.push({ name, content });
+    } catch (_) {
+      return {
+        ok: false,
+        message: `Lecture PDF impossible pour ${name}.`,
+      };
+    }
+  }
+
+  return { ok: true, fragments };
 }
 
 function defaultPromptForAttachments({ mode, userText }) {
@@ -345,7 +403,7 @@ export function setPendingUploadsState(status, error = '') {
   renderPendingUploads();
 }
 
-export async function preparePendingUploadsForSend({ model, userText, onStatus, items: providedItems }) {
+export async function preparePendingUploadsForSend({ model, userText, onStatus, items: providedItems, uploadedAttachments = [] }) {
   const items = Array.isArray(providedItems) ? providedItems.slice() : getPendingUploads();
   if (!items.length) {
     return {
@@ -356,21 +414,19 @@ export async function preparePendingUploadsForSend({ model, userText, onStatus, 
     };
   }
 
-  const hasPdf = items.some((item) => item.kind === 'pdf');
-  if (hasPdf) {
-    return {
-      ok: false,
-      message: 'Les PDF ne sont pas encore pris en charge dans ce MVP.',
-    };
-  }
-
   const imageItems = items.filter((item) => item.kind === 'image');
+  const pdfItems = items.filter((item) => item.kind === 'pdf');
   const textItems = items.filter((item) => item.kind === 'text');
   const textFragments = [];
   for (const item of textItems) {
     const content = (await item.file.text()).trim();
     if (!content) continue;
     textFragments.push({ name: item.file.name, content });
+  }
+  if (pdfItems.length) {
+    const pdfResult = await readPdfTextFragments(pdfItems, uploadedAttachments, onStatus);
+    if (!pdfResult.ok) return pdfResult;
+    textFragments.push(...pdfResult.fragments);
   }
 
   const imagePayloads = [];

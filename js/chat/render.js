@@ -1268,7 +1268,7 @@ function appendMessageAttachments(container, attachments){
 
     const kind = document.createElement('div');
     kind.className = 'attachment-kind';
-    kind.textContent = attachment.isImage ? 'Image jointe' : (attachment.mimeType || 'Fichier joint');
+    kind.textContent = attachment.isImage ? 'Image jointe' : (attachment.isPdf ? 'PDF joint' : (attachment.mimeType || 'Fichier joint'));
 
     const detail = document.createElement('div');
     detail.className = 'attachment-detail';

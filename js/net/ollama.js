@@ -803,6 +803,7 @@ export async function sendCurrent() {
     previewUrl: item?.objectUrl || null,
     url: item?.objectUrl || null,
     isImage: item?.kind === 'image',
+    isPdf: item?.kind === 'pdf',
   }));
   let shouldReleaseDetachedUploads = true;
 
@@ -880,6 +881,7 @@ export async function sendCurrent() {
       model,
       userText: text,
       items: detachedUploads,
+      uploadedAttachments,
     });
     if (!prepared.ok) {
       const message = prepared.message || 'Les fichiers joints ne peuvent pas etre envoyes.';
