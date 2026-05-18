@@ -1,6 +1,7 @@
 'use strict';
 
 import { initTheme } from './core/theme.js';
+import { initI18n } from './i18n/i18n.js';
 import { wireUserMenu, wirePromptModal, wireSettingsModal } from './ui/menus.js';
 import { wireSendAction, mountStatusPill } from './ui/actions.js';
 import { initAuthGate, wireLogout } from './auth/logout.js';
@@ -343,6 +344,7 @@ function wireSidebarResize() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+  initI18n();
   initTheme();
   const auth = await initAuthGate();
 
@@ -353,6 +355,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (auth.authenticated) {
     try { await mountHistory(); } catch (e) { console.warn('[mountHistory] failed', e); }
   }
+  document.addEventListener('i18n:language-changed', () => {
+    mountHistory().catch((e) => console.warn('[mountHistory] language refresh failed', e));
+  });
   wireUserMenu();
   wirePromptModal();
   wireSettingsModal();

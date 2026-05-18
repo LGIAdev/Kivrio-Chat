@@ -1,6 +1,7 @@
 import { qs } from '../core/dom.js';
 import { sendCurrent, readBase, readModel, ping } from '../net/ollama.js';
 import { showToast, userMessageForError } from './errors.js';
+import { t } from '../i18n/i18n.js';
 
 export function wireSendAction(){
   const ta = qs('#composer-input'); const btn = qs('#send-btn');
@@ -12,8 +13,9 @@ export function mountStatusPill(){
   const label = document.querySelector('#model-label');
   if(!label) return;
   const pill = document.createElement('span'); pill.className='status-pill';
-  const setPill = (ok, txt)=>{ pill.textContent=''; const dot=document.createElement('span'); dot.textContent='\u25CF'; dot.className = ok ? 'status-ok' : 'status-bad'; const t=document.createElement('span'); t.textContent = txt; pill.append(dot,t); };
-  const refreshTitle = ()=>{ const base = readBase(); const model = readModel(); pill.title = `Base: ${base}\nMod\u00E8le: ${model}\n(Cliquer pour modifier & ping)`; };
+  let statusKey = 'status.notTested';
+  const setPill = (ok, key)=>{ statusKey = key; pill.textContent=''; const dot=document.createElement('span'); dot.textContent='\u25CF'; dot.className = ok ? 'status-ok' : 'status-bad'; const text=document.createElement('span'); text.textContent = t(key); pill.append(dot,text); };
+  const refreshTitle = ()=>{ const base = readBase(); const model = readModel(); pill.title = t('model.statusTitle', { base, model }); };
   const holder = document.createElement('span');
 holder.style.display = 'inline-flex';
 holder.style.alignItems = 'center';
@@ -21,12 +23,17 @@ holder.style.gap = '6px';
 holder.style.whiteSpace = 'nowrap';
 label.parentNode.insertBefore(holder, label);
 holder.append(label, pill);
-  setPill(false,'Non test\u00E9'); refreshTitle();
+  setPill(false,'status.notTested'); refreshTitle();
   pill.addEventListener('click', async ()=>{
-    const base = prompt('Base Ollama (http://127.0.0.1:11434)', readBase()); if(base!=null) localStorage.setItem('ollamaBase', base);
-    const model = prompt('Mod\u00E8le', readModel()); if(model!=null) localStorage.setItem('ollamaModel', model);
+    const base = prompt(t('model.basePrompt'), readBase()); if(base!=null) localStorage.setItem('ollamaBase', base);
+    const model = prompt(t('model.prompt'), readModel()); if(model!=null) localStorage.setItem('ollamaModel', model);
     refreshTitle();
-    try{ await ping(readBase()); setPill(true,'OK'); }catch(e){ setPill(false,'\u00C9chec'); showToast(userMessageForError(e, 'Ping Ollama impossible.')); }
+    try{ await ping(readBase()); setPill(true,'common.ok'); }catch(e){ setPill(false,'common.failure'); showToast(userMessageForError(e, t('model.pingError'))); }
   });
-  ping(readBase()).then(()=>setPill(true,'OK')).catch(()=>setPill(false,'\u00C9chec'));
+  ping(readBase()).then(()=>setPill(true,'common.ok')).catch(()=>setPill(false,'common.failure'));
+  document.addEventListener('i18n:language-changed', () => {
+    const ok = statusKey === 'common.ok';
+    setPill(ok, statusKey);
+    refreshTitle();
+  });
 }

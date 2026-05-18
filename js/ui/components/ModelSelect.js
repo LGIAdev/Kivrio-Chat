@@ -1,11 +1,13 @@
 import { listModels } from '../../net/ollama.js';
 import { getModel, setModel } from '../../store/settings.js';
+import { t } from '../../i18n/i18n.js';
 
-function setSingleOption(el, value, label) {
+function setSingleOption(el, value, label, i18nKey = '') {
   el.replaceChildren();
   const option = document.createElement('option');
   option.value = value;
   option.textContent = label;
+  if (i18nKey) option.dataset.i18n = i18nKey;
   el.appendChild(option);
 }
 
@@ -21,7 +23,7 @@ function setModelOptions(el, models) {
 
 function setLabel(modelName) {
   const el = document.querySelector('#model-label');
-  if (el) el.textContent = modelName || '(modele)';
+  if (el) el.textContent = modelName || t('model.unknown');
 }
 
 export async function mountModelSelect() {
@@ -30,12 +32,12 @@ export async function mountModelSelect() {
 
   el.disabled = true;
   el.setAttribute('aria-busy', 'true');
-  setSingleOption(el, '', 'Chargement...');
+  setSingleOption(el, '', t('common.loadingDots'), 'common.loadingDots');
 
   try {
     const models = await listModels();
     if (!Array.isArray(models) || models.length === 0) {
-      setSingleOption(el, '', '(Aucun modele trouve)');
+      setSingleOption(el, '', t('model.noneFound'), 'model.noneFound');
       return;
     }
 
@@ -49,7 +51,7 @@ export async function mountModelSelect() {
     el.disabled = false;
   } catch (e) {
     console.error('ModelSelect load error:', e);
-    setSingleOption(el, '', '(Ollama indisponible)');
+    setSingleOption(el, '', t('model.unavailable'), 'model.unavailable');
     el.disabled = true;
   } finally {
     el.removeAttribute('aria-busy');

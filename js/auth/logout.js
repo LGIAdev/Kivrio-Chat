@@ -1,6 +1,7 @@
 import { mountHistory, Store } from '../store/conversations.js';
 import { getAuthStatus, login, logout, setupPassword } from '../net/conversationsApi.js';
 import { userMessageForError } from '../ui/errors.js';
+import { t, translateFragment } from '../i18n/i18n.js';
 
 const OVERLAY_ID = 'kivrio-login-overlay';
 let authEnabled = true;
@@ -22,24 +23,25 @@ function ensureOverlay() {
     + '<div class="login-splash" role="document">'
     + '  <div class="login-card">'
     + '    <div class="login-brand">Kivrio Chat</div>'
-    + '    <div id="login-title" class="login-title">Connectez-vous a Kivrio Chat</div>'
+    + '    <div id="login-title" class="login-title" data-i18n="auth.loginTitle">Connectez-vous a Kivrio Chat</div>'
     + '    <p id="login-hint" class="login-hint" hidden></p>'
     + '    <form id="login-form" class="login-form">'
     + '      <div class="login-field">'
-    + '        <label class="login-label" for="login-password">Mot de passe</label>'
+    + '        <label class="login-label" for="login-password" data-i18n="auth.password">Mot de passe</label>'
     + '        <input id="login-password" class="login-input" name="password" type="password" autocomplete="current-password" />'
     + '      </div>'
     + '      <div id="login-confirm-wrap" class="login-field" hidden>'
-    + '        <label class="login-label" for="login-password-confirm">Confirmer le mot de passe</label>'
+    + '        <label class="login-label" for="login-password-confirm" data-i18n="auth.confirmPassword">Confirmer le mot de passe</label>'
     + '        <input id="login-password-confirm" class="login-input" name="password_confirm" type="password" autocomplete="new-password" />'
     + '      </div>'
     + '      <p id="login-error" class="login-error" hidden></p>'
-    + '      <button id="login-btn" class="login-btn" type="submit" aria-label="Connexion">Connexion</button>'
+    + '      <button id="login-btn" class="login-btn" type="submit" aria-label="Connexion" data-i18n="auth.login" data-i18n-aria-label="auth.login">Connexion</button>'
     + '    </form>'
     + '  </div>'
     + '</div>';
 
   document.body.appendChild(overlay);
+  translateFragment(overlay);
   return overlay;
 }
 
@@ -64,13 +66,13 @@ function applyOverlayMode() {
   const button = document.getElementById('login-btn');
 
   if (title) {
-    title.textContent = setupRequired ? 'Creez votre mot de passe Kivrio Chat' : 'Connectez-vous a Kivrio Chat';
+    title.textContent = setupRequired ? t('auth.setupTitle') : t('auth.loginTitle');
   }
 
   if (hint) {
     hint.hidden = !setupRequired;
     hint.textContent = setupRequired
-      ? 'Premier lancement: choisissez un mot de passe personnel pour proteger Kivrio Chat sur cet appareil.'
+      ? t('auth.setupHint')
       : '';
   }
 
@@ -87,8 +89,8 @@ function applyOverlayMode() {
   }
 
   if (button) {
-    button.textContent = setupRequired ? 'Enregistrer' : 'Connexion';
-    button.setAttribute('aria-label', setupRequired ? 'Creer le mot de passe' : 'Connexion');
+    button.textContent = setupRequired ? t('auth.savePassword') : t('auth.login');
+    button.setAttribute('aria-label', setupRequired ? t('auth.createPasswordAria') : t('auth.login'));
   }
 }
 
@@ -139,13 +141,13 @@ export function renderLoginSplash(message = '') {
         }
         await completeAuthSuccess();
       } catch (err) {
-        const messageText = err?.serverMessage || err?.message || 'Connexion impossible.';
+        const messageText = err?.serverMessage || err?.message || t('auth.loginError');
         if (messageText === 'Password setup required.') {
           setupRequired = true;
           applyOverlayMode();
-          setLoginError('Choisissez d abord votre mot de passe.');
+          setLoginError(t('auth.choosePassword'));
         } else {
-          setLoginError(userMessageForError(err, 'Connexion impossible.'));
+          setLoginError(userMessageForError(err, t('auth.loginError')));
         }
       } finally {
         button.disabled = false;
@@ -181,7 +183,7 @@ export async function initAuthGate() {
   } catch (_) {
     authEnabled = true;
     setupRequired = false;
-    renderLoginSplash('Serveur indisponible.');
+    renderLoginSplash(t('auth.serverUnavailable'));
     return {
       enabled: true,
       authenticated: false,
@@ -195,7 +197,7 @@ export function wireLogout() {
 
   window.addEventListener('kivro:auth-required', (event) => {
     setupRequired = false;
-    renderLoginSplash(userMessageForError({ message: event?.detail?.message }, 'Session requise.'));
+    renderLoginSplash(userMessageForError({ message: event?.detail?.message }, t('auth.sessionRequired')));
   });
 
   const doLogout = async (e) => {
@@ -203,7 +205,7 @@ export function wireLogout() {
     try { await logout(); } catch (_) {}
     try { Store.clearCurrent(); } catch (_) {}
     setupRequired = false;
-    renderLoginSplash('Session fermee.');
+    renderLoginSplash(t('auth.sessionClosed'));
   };
 
   le.addEventListener('click', doLogout);
@@ -211,5 +213,12 @@ export function wireLogout() {
     if (e.key === 'Enter' || e.key === ' ') {
       doLogout(e);
     }
+  });
+
+  document.addEventListener('i18n:language-changed', () => {
+    const overlay = document.getElementById(OVERLAY_ID);
+    if (!overlay) return;
+    translateFragment(overlay);
+    applyOverlayMode();
   });
 }

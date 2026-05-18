@@ -2,6 +2,20 @@
 
 All notable changes to Kivrio Chat are documented in this file.
 
+## [Kivrio Chat 2026.5.18] - 2026-05-18
+
+### Added
+- Added a local FR/EN interface language selector in `Reglages`, with French as the first-use default.
+- Added a lightweight centralized i18n layer with persisted language preference.
+
+### Changed
+- Internationalized the main UI, guidance messages, empty states, upload messages, auth prompts, Web Search messages, model status text, and conversation/folder menus.
+- Updated `README.md` for `Kivrio Chat 2026.5.18`.
+
+### Removed
+- Removed the local authentication record from the working tree so the user password is not kept locally or tracked.
+- Kept third-party payloads out of GitHub; only placeholder files remain tracked for local vendor/runtime folders.
+
 ## [Kivrio Chat 2026.5.17] - 2026-05-17
 
 ### Added

@@ -5,6 +5,7 @@
 
 import { qs } from '../core/dom.js';
 import { userMessageForError } from '../ui/errors.js';
+import { t } from '../i18n/i18n.js';
 
 /* -----------------------------------------------------------
  * 1) Normalisation LaTeX (pour KaTeX)
@@ -418,7 +419,7 @@ function createMessageEditor(initialText){
   textarea.className = 'message-edit-textarea';
   textarea.value = String(initialText || '');
   textarea.rows = Math.max(3, textarea.value.split(/\r?\n/).length || 1);
-  textarea.setAttribute('aria-label', 'Modifier le message');
+  textarea.setAttribute('aria-label', t('chat.editMessage'));
 
   const footer = document.createElement('div');
   footer.className = 'message-edit-footer';
@@ -433,12 +434,12 @@ function createMessageEditor(initialText){
   const cancelButton = document.createElement('button');
   cancelButton.type = 'button';
   cancelButton.className = 'message-edit-button';
-  cancelButton.textContent = 'Annuler';
+  cancelButton.textContent = t('common.cancel');
 
   const saveButton = document.createElement('button');
   saveButton.type = 'button';
   saveButton.className = 'message-edit-button is-primary';
-  saveButton.textContent = 'Enregistrer';
+  saveButton.textContent = t('common.save');
 
   actions.append(cancelButton, saveButton);
   footer.append(status, actions);
@@ -453,7 +454,7 @@ async function handleMessageEditSave(bubble, editor){
   const nextText = String(editor.textarea.value || '').trim();
   const hasAttachments = Array.isArray(meta.attachments) && meta.attachments.length > 0;
   if (!nextText && !hasAttachments) {
-    editor.status.textContent = 'Le message ne peut pas etre vide.';
+    editor.status.textContent = t('chat.messageEmpty');
     editor.textarea.focus();
     return;
   }
@@ -464,14 +465,14 @@ async function handleMessageEditSave(bubble, editor){
   }
 
   if (typeof window.kivrioSaveMessageEdit !== 'function') {
-    editor.status.textContent = 'Modification indisponible.';
+    editor.status.textContent = t('chat.editUnavailable');
     return;
   }
 
   editor.saveButton.disabled = true;
   editor.cancelButton.disabled = true;
   editor.textarea.disabled = true;
-  editor.status.textContent = 'Regeneration...';
+  editor.status.textContent = t('chat.regeneration');
 
   try {
     await window.kivrioSaveMessageEdit({
@@ -484,7 +485,7 @@ async function handleMessageEditSave(bubble, editor){
       activeMessageEditor = null;
     }
   } catch (error) {
-    editor.status.textContent = userMessageForError(error, 'Modification impossible.');
+    editor.status.textContent = userMessageForError(error, t('chat.editImpossible'));
     editor.saveButton.disabled = false;
     editor.cancelButton.disabled = false;
     editor.textarea.disabled = false;
@@ -541,6 +542,8 @@ function createMessageActionButton(action, label, bubble){
   button.dataset.label = label;
   button.dataset.originalLabel = label;
   button.setAttribute('aria-label', label);
+  if (action === 'copy') button.dataset.i18nAriaLabel = 'chat.copyAction';
+  if (action === 'edit') button.dataset.i18nAriaLabel = 'chat.editAction';
   button.innerHTML = messageActionIcon(action);
 
   if (action === 'copy') {
@@ -549,15 +552,15 @@ function createMessageActionButton(action, label, bubble){
       if (!copyText) return;
       try {
         await copyTextToClipboard(copyText);
-        flashActionLabel(button, 'Copie');
+        flashActionLabel(button, t('common.copied'));
         const role = String(bubble?.dataset.role || bubble?.__kivrioMessageMeta?.role || '').toLowerCase();
         showCopyToast(
           role === 'assistant'
-            ? 'La r\u00E9ponse a \u00E9t\u00E9 copi\u00E9e'
-            : 'Le message a \u00E9t\u00E9 copi\u00E9'
+            ? t('chat.copyAssistant')
+            : t('chat.copyUser')
         );
       } catch (_) {
-        flashActionLabel(button, 'Echec');
+        flashActionLabel(button, t('common.failure'));
       }
     });
   } else if (action === 'edit') {
@@ -578,11 +581,11 @@ function createMessageActions(role, bubble){
 
   if (role === 'user') {
     actions.append(
-      createMessageActionButton('edit', 'Modifier', bubble),
-      createMessageActionButton('copy', 'Copier', bubble),
+      createMessageActionButton('edit', t('chat.editAction'), bubble),
+      createMessageActionButton('copy', t('chat.copyAction'), bubble),
     );
   } else {
-    actions.append(createMessageActionButton('copy', 'Copier', bubble));
+    actions.append(createMessageActionButton('copy', t('chat.copyAction'), bubble));
   }
 
   refreshMessageActionState(bubble);
@@ -616,7 +619,8 @@ function ensureImageViewer(){
   const closeButton = document.createElement('button');
   closeButton.type = 'button';
   closeButton.className = 'image-viewer-close';
-  closeButton.setAttribute('aria-label', 'Fermer l image');
+  closeButton.setAttribute('aria-label', t('chat.closeImage'));
+  closeButton.dataset.i18nAriaLabel = 'chat.closeImage';
   closeButton.innerHTML = ''
     + '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">'
     + '<path d="M7 7l10 10M17 7 7 17" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>'
@@ -624,7 +628,7 @@ function ensureImageViewer(){
 
   const image = document.createElement('img');
   image.className = 'image-viewer-image';
-  image.alt = 'Graphique agrandi';
+  image.alt = t('chat.expandedGraphic');
 
   closeButton.addEventListener('click', closeImageViewer);
   overlay.addEventListener('click', (event) => {
@@ -656,7 +660,7 @@ function openImageViewer(src, alt, trigger){
   if (!String(src || '').trim()) return;
   const state = ensureImageViewer();
   state.image.src = String(src || '');
-  state.image.alt = String(alt || 'Graphique agrandi');
+  state.image.alt = String(alt || t('chat.expandedGraphic'));
   state.activeTrigger = trigger instanceof HTMLElement ? trigger : null;
   state.overlay.hidden = false;
   document.body.classList.add('kivrio-image-viewer-open');
@@ -1193,7 +1197,8 @@ function appendWebSources(container, sources){
 
   const title = document.createElement('div');
   title.className = 'message-web-sources-title';
-  title.textContent = 'Sources Web';
+  title.textContent = t('chat.webSources');
+  title.dataset.i18n = 'chat.webSources';
   wrap.appendChild(title);
 
   const list = document.createElement('ol');
@@ -1250,7 +1255,8 @@ function appendMessageAttachments(container, attachments){
       preview.classList.add('is-image');
       const img = new Image();
       img.src = attachment.previewUrl || attachment.url;
-      img.alt = attachment.filename || 'Piece jointe';
+      img.alt = attachment.filename || t('chat.attachment');
+      if (!attachment.filename) img.dataset.i18nAlt = 'chat.attachment';
       preview.appendChild(img);
     }else{
       preview.classList.add('is-file');
@@ -1264,11 +1270,19 @@ function appendMessageAttachments(container, attachments){
 
     const name = document.createElement('div');
     name.className = 'attachment-name';
-    name.textContent = attachment.filename || 'Piece jointe';
+    if (attachment.filename) {
+      name.textContent = attachment.filename;
+    } else {
+      name.textContent = t('chat.attachment');
+      name.dataset.i18n = 'chat.attachment';
+    }
 
     const kind = document.createElement('div');
     kind.className = 'attachment-kind';
-    kind.textContent = attachment.isImage ? 'Image jointe' : (attachment.isPdf ? 'PDF joint' : (attachment.mimeType || 'Fichier joint'));
+    kind.textContent = attachment.isImage ? t('chat.attachedImage') : (attachment.isPdf ? t('chat.attachedPdf') : (attachment.mimeType || t('chat.attachedFile')));
+    if (attachment.isImage) kind.dataset.i18n = 'chat.attachedImage';
+    else if (attachment.isPdf) kind.dataset.i18n = 'chat.attachedPdf';
+    else if (!attachment.mimeType) kind.dataset.i18n = 'chat.attachedFile';
 
     const detail = document.createElement('div');
     detail.className = 'attachment-detail';
@@ -1295,7 +1309,15 @@ export function renderMsg(role, text, options = {}){
   const r = document.createElement('div');
   r.className = 'role';
   const assistantModel = String(options.model || '').trim();
-  r.textContent = (role === 'user' ? 'Vous' : (assistantModel || 'Modele inconnu'));
+  if (role === 'user') {
+    r.textContent = t('chat.you');
+    r.dataset.i18n = 'chat.you';
+  } else if (assistantModel) {
+    r.textContent = assistantModel;
+  } else {
+    r.textContent = t('chat.unknownModel');
+    r.dataset.i18n = 'chat.unknownModel';
+  }
 
   const b = document.createElement('div');
   b.className = 'bubble';

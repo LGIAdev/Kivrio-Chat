@@ -19,6 +19,7 @@ import {
   webSearch,
 } from './conversationsApi.js';
 import { assistantErrorMessage, showToast, userMessageForError } from '../ui/errors.js';
+import { t } from '../i18n/i18n.js';
 
 const LS = { base: 'ollamaBase', model: 'ollamaModel' };
 const THINK_START_TAG = '<think>';
@@ -49,8 +50,8 @@ const GENERATE_ANSWER_PATHS = [
   'response',
   'message.content',
 ];
-const WEB_SEARCH_UNAVAILABLE_MESSAGE = 'La recherche Web est momentan\u00e9ment indisponible. Vous pouvez r\u00e9essayer ou continuer sans recherche Web.';
-const WEB_SEARCH_UNAVAILABLE_ASSISTANT_MESSAGE = 'Je ne peux pas effectuer la recherche Web actuellement. R\u00e9essayez dans quelques instants ou d\u00e9sactivez Recherche Web pour continuer sans sources Web.';
+const webSearchUnavailableMessage = () => t('webSearch.unavailable');
+const webSearchUnavailableAssistantMessage = () => t('webSearch.unavailableAssistant');
 const WEB_SEARCH_CONTEXT_MAX_RESULTS = 5;
 const WEB_SEARCH_CONTEXT_TITLE_MAX = 180;
 const WEB_SEARCH_CONTEXT_SNIPPET_MAX = 700;
@@ -64,9 +65,9 @@ const setLS = (k, v) => { try { localStorage.setItem(k, v); } catch (_) {} };
 
 function createAbortError() {
   if (typeof DOMException === 'function') {
-    return new DOMException('Generation annulee.', 'AbortError');
+    return new DOMException(t('status.cancelled'), 'AbortError');
   }
-  const error = new Error('Generation annulee.');
+  const error = new Error(t('status.cancelled'));
   error.name = 'AbortError';
   return error;
 }
@@ -419,13 +420,13 @@ export function buildWebSearchPromptContext(payload, { maxResults = WEB_SEARCH_C
     return { available: false, sources: [], promptContext: '' };
   }
 
-  const lines = ['Contexte Web:'];
+  const lines = [t('webSearch.contextTitle')];
   for (const source of sources) {
     lines.push('');
     lines.push(`[${source.index}] ${source.title}`);
-    if (source.source) lines.push(`Source: ${source.source}`);
-    lines.push(`URL: ${source.url}`);
-    if (source.snippet) lines.push(`Extrait: ${source.snippet}`);
+    if (source.source) lines.push(t('webSearch.source', { source: source.source }));
+    lines.push(t('webSearch.url', { url: source.url }));
+    if (source.snippet) lines.push(t('webSearch.excerpt', { snippet: source.snippet }));
   }
 
   return {
@@ -441,22 +442,22 @@ export function buildPromptWithWebSearchContext(userPrompt, webPromptContext) {
   if (!context) return prompt;
 
   return [
-    'Question utilisateur:',
+    t('webSearch.userQuestion'),
     prompt,
     '',
     context,
     '',
-    'Consignes de reponse:',
-    '- Reponds a la question en utilisant le contexte Web quand il est pertinent.',
-    '- Cite les affirmations issues du Web avec les references [1], [2], etc.',
-    '- Si les sources ne suffisent pas, indique clairement les limites.',
+    t('webSearch.answerInstructions'),
+    t('webSearch.instructionUseContext'),
+    t('webSearch.instructionCite'),
+    t('webSearch.instructionLimits'),
   ].join('\n');
 }
 
 export function buildWebSearchUnavailableAssistantMessage(message = '') {
   const detail = String(message || '').trim();
-  if (!detail || detail === WEB_SEARCH_UNAVAILABLE_MESSAGE) return WEB_SEARCH_UNAVAILABLE_ASSISTANT_MESSAGE;
-  return `${WEB_SEARCH_UNAVAILABLE_ASSISTANT_MESSAGE}\n\nDetail technique: ${detail}`;
+  if (!detail || detail === webSearchUnavailableMessage()) return webSearchUnavailableAssistantMessage();
+  return `${webSearchUnavailableAssistantMessage()}\n\n${t('webSearch.technicalDetail', { detail })}`;
 }
 
 export function shouldBlockModelForUnavailableWebSearch(webSearchRequested, webPromptContext) {
@@ -634,7 +635,7 @@ function setSendButtonBusy(isBusy) {
   btn.disabled = isBusy;
   btn.classList.toggle('is-busy', isBusy);
   btn.setAttribute('aria-busy', isBusy ? 'true' : 'false');
-  btn.title = isBusy ? 'Traitement en cours...' : '';
+  btn.title = isBusy ? t('status.processing') : '';
 }
 
 async function resolveWebSearchPromptContextForCurrentMessage(query, { signal = null } = {}) {
@@ -653,7 +654,7 @@ async function resolveWebSearchPromptContextForCurrentMessage(query, { signal = 
     const context = buildWebSearchPromptContext(payload);
     if (context.available) return context;
 
-    const message = String(payload?.message || WEB_SEARCH_UNAVAILABLE_MESSAGE).trim();
+    const message = String(payload?.message || webSearchUnavailableMessage()).trim();
     if (message) {
       showToast(message, { tone: 'info' });
     }
@@ -665,7 +666,7 @@ async function resolveWebSearchPromptContextForCurrentMessage(query, { signal = 
     };
   } catch (err) {
     if (isAbortError(err)) return { available: false, sources: [], promptContext: '', aborted: true };
-    const message = userMessageForError(err, WEB_SEARCH_UNAVAILABLE_MESSAGE);
+    const message = userMessageForError(err, webSearchUnavailableMessage());
     showToast(message, { tone: 'info' });
     return {
       available: false,
@@ -714,7 +715,7 @@ export async function regenerateFromEditedMessage({ conversationId, messageId, c
       await loadSystemPrompt();
       sys = readSys();
     } catch (err) {
-      const msg = assistantErrorMessage(err, 'Impossible de charger le prompt systeme.');
+      const msg = assistantErrorMessage(err, t('prompt.loadError'));
       aiB = renderMsg('assistant', msg, { model });
       const savedError = await Store.addMsg(conversationId, 'assistant', msg, { model });
       bindMessageRecord(aiB, savedError);
@@ -761,7 +762,7 @@ export async function regenerateFromEditedMessage({ conversationId, messageId, c
       if (isAbortError(err) || isRequestAborted(streamRequest)) {
         return Store.get(conversationId) || conversation;
       }
-      const msg = assistantErrorMessage(err, 'Generation impossible.');
+      const msg = assistantErrorMessage(err, t('errors.generationImpossible'));
       renderAssistantChunk(aiB, { answerText: msg, reasoningText: '', reasoningDurationMs: null }, { model });
       const savedError = await Store.addMsg(conversationId, 'assistant', msg, { model });
       bindMessageRecord(aiB, savedError);
@@ -778,7 +779,7 @@ export async function regenerateFromEditedMessage({ conversationId, messageId, c
 export async function sendCurrent() {
   const ta = qs('#composer-input');
   if (!ta) {
-    showToast('Zone de saisie introuvable.');
+    showToast(t('status.inputMissing'));
     return;
   }
   if (isSendInFlight) return;
@@ -792,12 +793,12 @@ export async function sendCurrent() {
     await loadSystemPrompt();
     sys = readSys();
   } catch (err) {
-    showToast(userMessageForError(err, 'Impossible de charger le prompt systeme.'));
+    showToast(userMessageForError(err, t('prompt.loadError')));
     return;
   }
   const detachedUploads = pendingUploads.length ? detachPendingUploads() : [];
   const localAttachments = detachedUploads.map((item) => ({
-    filename: item?.file?.name || 'Piece jointe',
+    filename: item?.file?.name || t('chat.attachment'),
     mimeType: item?.file?.type || '',
     sizeBytes: Number(item?.file?.size || 0),
     previewUrl: item?.objectUrl || null,
@@ -836,12 +837,12 @@ export async function sendCurrent() {
     }
     if (!isCurrentRequest(streamRequest)) return;
     if (!convId && Store.create) {
-      const conversation = await Store.create('Nouvelle conversation');
+      const conversation = await Store.create(t('sidebar.newConversationTitle'));
       convId = conversation.id;
     }
     if (!isCurrentRequest(streamRequest)) return;
     if (!convId) {
-      const message = 'Impossible de creer la conversation.';
+      const message = t('chat.createConversationImpossible');
       if (detachedUploads.length) {
         restorePendingUploads(detachedUploads, message);
         shouldReleaseDetachedUploads = false;
@@ -855,7 +856,7 @@ export async function sendCurrent() {
       try {
         uploadedAttachments = await uploadConversationAttachments(convId, detachedUploads.map((item) => item.file));
       } catch (err) {
-        const message = userMessageForError(err, 'Televersement impossible.');
+        const message = userMessageForError(err, t('uploads.uploadImpossible'));
         restorePendingUploads(detachedUploads, message);
         shouldReleaseDetachedUploads = false;
         if (aiB) {
@@ -884,7 +885,7 @@ export async function sendCurrent() {
       uploadedAttachments,
     });
     if (!prepared.ok) {
-      const message = prepared.message || 'Les fichiers joints ne peuvent pas etre envoyes.';
+      const message = prepared.message || t('uploads.cannotSend');
       if (aiB) {
         renderAssistantChunk(aiB, { answerText: message }, { model });
       } else {
@@ -925,7 +926,7 @@ export async function sendCurrent() {
     if (!isCurrentRequest(streamRequest)) return;
 
     try {
-      await Store.renameIfDefault(convId, fmtTitle(prepared.suggestedTitle || text || 'Piece jointe'));
+      await Store.renameIfDefault(convId, fmtTitle(prepared.suggestedTitle || text || t('chat.attachment')));
     } catch (_) {}
     try {
       await mountHistory();
@@ -969,7 +970,7 @@ export async function sendCurrent() {
       if (isAbortError(err) || isRequestAborted(streamRequest)) {
         return;
       }
-      const msg = assistantErrorMessage(err, 'Generation impossible.');
+      const msg = assistantErrorMessage(err, t('errors.generationImpossible'));
       renderAssistantChunk(aiB, { answerText: msg, reasoningText: '', reasoningDurationMs: null }, { model });
       if (convId) await Store.addMsg(convId, 'assistant', msg, { model });
       try { await mountHistory(); } catch (_) {}

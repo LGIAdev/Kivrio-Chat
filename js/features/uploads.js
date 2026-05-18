@@ -1,5 +1,6 @@
 import { canModelReadFiles } from '../config/file-capable-models.js';
 import { getAttachmentText } from '../net/conversationsApi.js';
+import { t } from '../i18n/i18n.js';
 
 const LIMITS = {
   image: 10 * 1024 * 1024,
@@ -62,9 +63,9 @@ function setError(message = '') {
 }
 
 function statusLabel(item) {
-  if (item.status === 'uploading') return 'Televersement...';
-  if (item.status === 'error') return item.error || 'Erreur';
-  return 'Pret a envoyer';
+  if (item.status === 'uploading') return t('uploads.statusUploading');
+  if (item.status === 'error') return item.error || t('common.error');
+  return t('uploads.statusReady');
 }
 
 function makeFileBadge(item) {
@@ -112,7 +113,7 @@ function renderPendingUploads() {
     remove.type = 'button';
     remove.className = 'pending-attachment-remove';
     remove.dataset.id = item.id;
-    remove.textContent = 'Supprimer';
+    remove.textContent = t('uploads.remove');
     remove.disabled = item.status === 'uploading';
 
     meta.append(name, info, status);
@@ -128,19 +129,19 @@ function pushFiles(files) {
   for (const file of files) {
     const kind = kindForFile(file);
     if (kind === 'unsupported') {
-      error = `Type non pris en charge : ${file.name}`;
+      error = t('uploads.unsupportedType', { name: file.name });
       continue;
     }
     if (next.length >= LIMITS.count) {
-      error = `Maximum ${LIMITS.count} fichiers par message.`;
+      error = t('uploads.maxFiles', { count: LIMITS.count });
       break;
     }
     if (file.size > LIMITS[kind]) {
-      error = `Fichier trop volumineux : ${file.name}`;
+      error = t('uploads.tooLarge', { name: file.name });
       continue;
     }
     if (totalBytes([...next, { file }]) > LIMITS.total) {
-      error = 'Le total des fichiers depasse la limite autorisee.';
+      error = t('uploads.totalTooLarge');
       break;
     }
     next.push({
@@ -175,7 +176,7 @@ function readFileAsBase64(file) {
       const comma = raw.indexOf(',');
       resolve(comma >= 0 ? raw.slice(comma + 1) : raw);
     };
-    reader.onerror = () => reject(reader.error || new Error(`Lecture impossible: ${file.name}`));
+    reader.onerror = () => reject(reader.error || new Error(t('uploads.readImpossible', { name: file.name })));
     reader.readAsDataURL(file);
   });
 }
@@ -187,7 +188,7 @@ function appendPromptBlock(promptText, label, blocks) {
 }
 
 function textFragmentsToPromptBlocks(textFragments) {
-  return textFragments.map((item) => ['Fichier: ' + item.name, item.content].join('\n'));
+  return textFragments.map((item) => [t('uploads.fileBlockLabel', { name: item.name }), item.content].join('\n'));
 }
 
 function isPdfAttachmentRecord(attachment) {
@@ -222,25 +223,25 @@ async function readPdfTextFragments(pdfItems, uploadedAttachments, onStatus) {
     if (!attachment?.id && !attachment?.textUrl) {
       return {
         ok: false,
-        message: `Lecture PDF indisponible pour ${name}.`,
+        message: t('uploads.pdfReadUnavailable', { name }),
       };
     }
 
     try {
-      if (typeof onStatus === 'function') onStatus(`Lecture PDF: ${name}`);
+      if (typeof onStatus === 'function') onStatus(t('uploads.pdfReading', { name }));
       const payload = await getAttachmentText(attachment);
       const content = String(payload?.text || '').trim();
       if (!content) {
         return {
           ok: false,
-          message: `Aucun texte extractible dans ${name}.`,
+          message: t('uploads.pdfNoText', { name }),
         };
       }
       fragments.push({ name, content });
     } catch (_) {
       return {
         ok: false,
-        message: `Lecture PDF impossible pour ${name}.`,
+        message: t('uploads.pdfReadImpossible', { name }),
       };
     }
   }
@@ -251,8 +252,8 @@ async function readPdfTextFragments(pdfItems, uploadedAttachments, onStatus) {
 function defaultPromptForAttachments({ mode, userText }) {
   const trimmed = String(userText || '').trim();
   if (trimmed) return trimmed;
-  if (mode === 'image') return 'Analyse le fichier joint et aide-moi a resoudre le probleme.';
-  return 'Analyse le document joint.';
+  if (mode === 'image') return t('uploads.promptImage');
+  return t('uploads.promptDocument');
 }
 
 function setAddMenuOpen(open) {
@@ -354,6 +355,10 @@ export function wireUploads() {
 
   renderPendingUploads();
   renderWebSearchSelection();
+  document.addEventListener('i18n:language-changed', () => {
+    renderPendingUploads();
+    renderWebSearchSelection();
+  });
 }
 
 export function hasPendingUploads() {
@@ -445,7 +450,7 @@ export async function preparePendingUploadsForSend({ model, userText, onStatus, 
   } else if (imageItems.length) {
     return {
       ok: false,
-      message: 'Les images jointes ne sont plus traitees via OCR local. Utilisez un modele multimodal pour analyser un fichier image.',
+      message: t('uploads.imagesNeedMultimodal'),
     };
   } else if (!promptText && textFragments.length) {
     promptText = defaultPromptForAttachments({ mode: 'text', userText });
@@ -454,7 +459,7 @@ export async function preparePendingUploadsForSend({ model, userText, onStatus, 
   if (textFragments.length) {
     promptText = appendPromptBlock(
       promptText,
-      'Contenu des fichiers joints:',
+      t('uploads.attachedFilesContent'),
       textFragmentsToPromptBlocks(textFragments),
     );
   }
@@ -463,7 +468,7 @@ export async function preparePendingUploadsForSend({ model, userText, onStatus, 
     ok: true,
     promptText,
     imagePayloads,
-    suggestedTitle: String(userText || '').trim() || items[0]?.file?.name || 'Piece jointe',
+    suggestedTitle: String(userText || '').trim() || items[0]?.file?.name || t('chat.attachment'),
   };
 }
 
