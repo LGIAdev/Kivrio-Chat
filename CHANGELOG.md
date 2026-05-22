@@ -2,6 +2,19 @@
 
 All notable changes to Kivrio Chat are documented in this file.
 
+## [Kivrio Chat 2026.5.21] - 2026-05-21
+
+### Changed
+- Added a clear in-progress visual state for the composer send button: the blue arrow button now switches to a centered white square while the model is responding, then returns to the arrow when generation finishes.
+- Moved the copy confirmation toast below the top-right model selector to avoid overlapping the selector.
+- Added the small green status dot to the copy confirmation toast.
+- Updated `README.md` for `Kivrio Chat 2026.5.21`.
+
+### Removed
+- Removed the local authentication record from the working tree so the user password is not kept locally or tracked.
+- Removed an obsolete local temporary conversation-store backup after confirming the active local database is valid and empty.
+- Confirmed third-party runtime/vendor payloads remain out of GitHub; only placeholder files are tracked for local vendor/runtime directories.
+
 ## [Kivrio Chat 2026.5.18] - 2026-05-18
 
 ### Added

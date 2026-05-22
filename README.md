@@ -7,12 +7,13 @@ Kivrio Chat is a local chat interface for working with local AI models via [Olla
 It provides a desktop-style web UI with Markdown rendering, file-aware conversations, local session authentication, and a fully local JSON persistence layer.
 
 Status: project under active development.
-Version: Kivrio Chat 2026.5.18.
+Version: Kivrio Chat 2026.5.21.
 
 ---
 
 ## Releases
 
+- [Kivrio Chat 2026.5.21](releases/Kivrio-Chat-2026.5.21.md)
 - [Kivrio Chat 2026.5.18](releases/Kivrio-Chat-2026.5.18.md)
 - [Kivrio Chat 2026.5.17](releases/Kivrio-Chat-2026.5.17.md)
 - [Kivrio Chat 2026.5.12.1](releases/Kivrio-Chat-2026.5.12.1.md)

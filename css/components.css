@@ -130,8 +130,11 @@
 }
 .copy-toast{
   position:fixed;
-  top:18px;
+  top:52px;
   right:18px;
+  display:flex;
+  align-items:center;
+  gap:8px;
   max-width:min(340px, calc(100vw - 32px));
   padding:11px 14px;
   border:1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
@@ -144,6 +147,15 @@
   transition:opacity .18s ease, transform .18s ease;
   pointer-events:none;
   z-index:90;
+}
+.copy-toast::before{
+  content:"";
+  flex:0 0 auto;
+  width:8px;
+  height:8px;
+  border-radius:999px;
+  background:#71d391;
+  box-shadow:0 0 0 3px rgba(113, 211, 145, .15);
 }
 .copy-toast.is-visible{
   opacity:1;
@@ -611,6 +623,19 @@
   opacity:.72;
   cursor:progress;
   filter:none;
+}
+.icon-btn#send-btn.is-busy{
+  opacity:1;
+}
+.icon-btn#send-btn.is-busy svg{
+  display:none;
+}
+.icon-btn#send-btn.is-busy::before{
+  content:"";
+  width:10px;
+  height:10px;
+  border-radius:2px;
+  background:#fff;
 }
 
 /* Mode clair - surfaces discretes */
