@@ -277,6 +277,7 @@
 .conv-actions-btn:hover,
 .conv-actions-btn:focus-visible{ background:var(--hover); color:var(--text); outline:none; }
 .conv-menu{ position:absolute; top:calc(100% + 4px); right:0; min-width:140px; padding:6px; border-radius:12px; background:var(--surface-field); border:1px solid var(--border); box-shadow:0 12px 24px rgba(15,23,42,.12); display:none; z-index:20; }
+.conv-menu-conversation{ right:0; width:184px; max-width:calc(100% - 16px); box-sizing:border-box; }
 .conv-menu.open{ display:block; }
 .conv-menu-btn{ width:100%; padding:9px 10px; border:0; border-radius:8px; background:transparent; color:var(--text); text-align:left; font:inherit; cursor:pointer; }
 .conv-menu-btn:hover{ background:var(--hover); }

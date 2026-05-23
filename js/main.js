@@ -60,6 +60,9 @@ function makeTitleFromText(txt, max = 60) {
 
 function cancelOngoingStream() {
   try {
+    if (typeof window.kivrioStopCurrentResponse === 'function' && window.kivrioStopCurrentResponse()) {
+      return;
+    }
     if (window.kivrioAbortController && typeof window.kivrioAbortController.abort === 'function') {
       window.kivrioAbortController.abort();
     } else {

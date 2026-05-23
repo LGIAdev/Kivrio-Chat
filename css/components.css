@@ -618,14 +618,14 @@
   border-radius:999px;
 }
 .icon-btn#send-btn:hover{ filter:brightness(1.08); }
-.icon-btn#send-btn.is-busy,
 .icon-btn#send-btn:disabled{
   opacity:.72;
-  cursor:progress;
+  cursor:not-allowed;
   filter:none;
 }
 .icon-btn#send-btn.is-busy{
   opacity:1;
+  cursor:pointer;
 }
 .icon-btn#send-btn.is-busy svg{
   display:none;

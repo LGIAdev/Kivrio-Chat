@@ -1,12 +1,18 @@
 import { qs } from '../core/dom.js';
-import { sendCurrent, readBase, readModel, ping } from '../net/ollama.js';
+import { sendCurrent, stopCurrentResponse, readBase, readModel, ping } from '../net/ollama.js';
 import { showToast, userMessageForError } from './errors.js';
 import { t } from '../i18n/i18n.js';
 
 export function wireSendAction(){
   const ta = qs('#composer-input'); const btn = qs('#send-btn');
   if(ta){ ta.addEventListener('keydown', (e)=>{ if(e.key==='Enter' && (e.ctrlKey || e.metaKey)){ e.preventDefault(); sendCurrent(); } }); }
-  if(btn){ btn.addEventListener('click', (e)=>{ e.preventDefault(); sendCurrent(); }); }
+  if(btn){
+    btn.addEventListener('click', (e)=>{
+      e.preventDefault();
+      if(btn.classList.contains('is-busy') && stopCurrentResponse()) return;
+      sendCurrent();
+    });
+  }
 }
 
 export function mountStatusPill(){

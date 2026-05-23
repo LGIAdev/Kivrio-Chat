@@ -926,7 +926,7 @@ export async function mountHistory() {
       actions.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="6" cy="12" r="1.7"></circle><circle cx="12" cy="12" r="1.7"></circle><circle cx="18" cy="12" r="1.7"></circle></svg>';
 
       const menu = document.createElement('div');
-      menu.className = 'conv-menu';
+      menu.className = 'conv-menu conv-menu-conversation';
       menu.setAttribute('role', 'menu');
 
       actions.addEventListener('click', (event) => {

@@ -109,6 +109,22 @@ function isCurrentRequest(request) {
   return activeStreamRequest === request && !isRequestAborted(request);
 }
 
+export function stopCurrentResponse() {
+  const request = activeStreamRequest;
+  if (!request) return false;
+  try {
+    request.controller?.abort?.();
+  } catch (_) {}
+  endStreamRequest(request);
+  isSendInFlight = false;
+  setSendButtonBusy(false);
+  return true;
+}
+
+if (typeof window !== 'undefined') {
+  window.kivrioStopCurrentResponse = stopCurrentResponse;
+}
+
 export function readBase() {
   const v = (getRaw(LS.base) || '').trim();
   if (!v || !/^(https?:)?\/\//i.test(v)) return 'http://127.0.0.1:11434';
@@ -632,10 +648,14 @@ function renderConversationSnapshot(conversation) {
 function setSendButtonBusy(isBusy) {
   const btn = qs('#send-btn');
   if (!(btn instanceof HTMLButtonElement)) return;
-  btn.disabled = isBusy;
+  btn.disabled = false;
   btn.classList.toggle('is-busy', isBusy);
   btn.setAttribute('aria-busy', isBusy ? 'true' : 'false');
-  btn.title = isBusy ? t('status.processing') : '';
+  const titleKey = isBusy ? 'composer.stopTitle' : 'composer.sendTitle';
+  btn.dataset.i18nTitle = titleKey;
+  btn.dataset.i18nAriaLabel = titleKey;
+  btn.title = t(titleKey);
+  btn.setAttribute('aria-label', t(titleKey));
 }
 
 async function resolveWebSearchPromptContextForCurrentMessage(query, { signal = null } = {}) {
@@ -770,9 +790,12 @@ export async function regenerateFromEditedMessage({ conversationId, messageId, c
       return Store.get(conversationId) || conversation;
     }
   } finally {
+    const shouldResetSendState = activeStreamRequest === streamRequest;
     endStreamRequest(streamRequest);
-    isSendInFlight = false;
-    setSendButtonBusy(false);
+    if (shouldResetSendState) {
+      isSendInFlight = false;
+      setSendButtonBusy(false);
+    }
   }
 }
 
@@ -977,10 +1000,13 @@ export async function sendCurrent() {
       console.warn('Fetch error', err);
     }
   } finally {
+    const shouldResetSendState = activeStreamRequest === streamRequest;
     endStreamRequest(streamRequest);
     if (shouldReleaseDetachedUploads) releaseUploadItems(detachedUploads);
-    isSendInFlight = false;
-    setSendButtonBusy(false);
+    if (shouldResetSendState) {
+      isSendInFlight = false;
+      setSendButtonBusy(false);
+    }
   }
 }
 
