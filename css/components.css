@@ -610,6 +610,18 @@
   stroke:currentColor; fill:none; stroke-width:1.8;
 }
 
+.icon-btn#mic-btn.is-listening{
+  color:#86efac;
+  border-color:rgba(34,197,94,.55);
+  background:rgba(34,197,94,.14);
+}
+.icon-btn#mic-btn.is-transcribing{
+  color:#bfdbfe;
+  border-color:rgba(110,168,254,.55);
+  background:rgba(110,168,254,.14);
+  cursor:progress;
+}
+
 /* Bouton envoyer en accent circulaire */
 .icon-btn#send-btn{
   background:var(--accent);

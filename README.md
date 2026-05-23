@@ -7,12 +7,13 @@ Kivrio Chat is a local chat interface for working with local AI models via [Olla
 It provides a desktop-style web UI with Markdown rendering, file-aware conversations, local session authentication, and a fully local JSON persistence layer.
 
 Status: project under active development.
-Version: Kivrio Chat 2026.5.23.
+Version: Kivrio Chat 2026.5.23.1.
 
 ---
 
 ## Releases
 
+- [Kivrio Chat 2026.5.23.1](releases/Kivrio-Chat-2026.5.23.1.md)
 - [Kivrio Chat 2026.5.23](releases/Kivrio-Chat-2026.5.23.md)
 - [Kivrio Chat 2026.5.21](releases/Kivrio-Chat-2026.5.21.md)
 - [Kivrio Chat 2026.5.18](releases/Kivrio-Chat-2026.5.18.md)
@@ -44,6 +45,7 @@ It is separate from Kivrio and Kivrio Agent UI, with its own launcher, local por
 - Direct file reading for supported multimodal models
 - PDF text extraction for uploaded PDF attachments when local PdfPig libraries are present
 - Local Web Search integration through a managed SearXNG runtime when present
+- Optional local voice dictation through `whisper.cpp` when configured locally
 
 ---
 
@@ -58,6 +60,7 @@ Kivrio Chat now runs as a local application made of:
 - direct file reading for supported multimodal models
 - optional local Web Search runtime files that are kept out of the source repository
 - optional local PDF extraction libraries kept out of the source repository
+- optional local `whisper.cpp` binaries and Whisper models kept out of the source repository
 
 Conversation data is stored locally in:
 
@@ -97,6 +100,17 @@ Make sure Ollama is installed locally and running, for example on:
 `http://127.0.0.1:11434`
 
 For image files, Kivrio Chat keeps file upload support for compatible multimodal models.
+
+### Optional voice dictation
+
+Kivrio Chat can use a local `whisper.cpp` executable for the Micro button.
+
+Third-party binaries and models are not included in this repository. Keep them local only:
+
+- `integrations/whisper/bin/`
+- `integrations/whisper/models/`
+
+Copy `integrations/whisper/config.example.json` to `integrations/whisper/config.json`, then adjust the local executable and model paths. The Micro button inserts the recognized text into the prompt; it does not send the prompt automatically.
 
 ### Stopping Kivrio Chat
 

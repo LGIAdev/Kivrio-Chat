@@ -564,10 +564,17 @@ namespace KivrioChat
         private const int SearxngLauncherTimeoutMs = 30000;
         private const int SearxngStopTimeoutMs = 10000;
         private const int PdfExtractedTextMaxChars = 200000;
+        private const long VoiceAudioMaxBytes = 10L * 1024L * 1024L;
+        private const int VoiceDefaultTimeoutSeconds = 60;
+        private const int VoiceMaxTimeoutSeconds = 180;
         private const string WebSearchBaseUrlEnv = "KIVRIO_WEB_SEARCH_BASE_URL";
         private const string WebSearchEnableManagedEnv = "KIVRIO_WEB_SEARCH_ENABLE_MANAGED";
         private const string WebSearchAllowMockEnv = "KIVRIO_WEB_SEARCH_ALLOW_MOCK";
         private const string WebSearchMockBaseUrlEnv = "KIVRIO_WEB_SEARCH_MOCK_BASE_URL";
+        private const string WhisperExeEnv = "KIVRIO_WHISPER_EXE";
+        private const string WhisperModelEnv = "KIVRIO_WHISPER_MODEL";
+        private const string WhisperLanguageEnv = "KIVRIO_WHISPER_LANGUAGE";
+        private const string WhisperTimeoutEnv = "KIVRIO_WHISPER_TIMEOUT_SECONDS";
         private const string WebSearchUnavailableMessage = "La recherche Web est momentan\u00e9ment indisponible. Vous pouvez r\u00e9essayer ou continuer sans recherche Web.";
         private readonly string _root;
         private readonly string _host;
@@ -589,6 +596,14 @@ namespace KivrioChat
         private volatile bool _shutdownRequested;
         private bool _listenerStopQueued;
         private TcpListener _listener;
+
+        private sealed class WhisperConfig
+        {
+            public string ExecutablePath;
+            public string ModelPath;
+            public string Language;
+            public int TimeoutSeconds;
+        }
 
         public LocalServer(string root, string host, int port)
         {
@@ -839,6 +854,11 @@ namespace KivrioChat
             if (method == "POST" && path == "/api/web-search")
             {
                 return HandleWebSearch(ReadJsonObject(request));
+            }
+
+            if (method == "POST" && path == "/api/voice/transcribe")
+            {
+                return HandleVoiceTranscription(request);
             }
 
             if (method == "GET" && path == "/api/conversations")
@@ -1528,6 +1548,282 @@ namespace KivrioChat
             string text = (value ?? "").Trim();
             if (maxLength <= 0 || text.Length <= maxLength) return text;
             return text.Substring(0, maxLength).Trim();
+        }
+
+        private HttpResponse HandleVoiceTranscription(HttpRequest request)
+        {
+            List<UploadedFile> files = ReadMultipartFiles(request);
+            if (files.Count == 0)
+            {
+                return JsonError(HttpStatusCode.BadRequest, "Aucun audio de dictee recu.");
+            }
+
+            UploadedFile audio = files[0];
+            string validationError = ValidateVoiceAudio(audio);
+            if (!string.IsNullOrEmpty(validationError))
+            {
+                return JsonError(HttpStatusCode.BadRequest, validationError);
+            }
+
+            WhisperConfig config = ReadWhisperConfig();
+            string configError = ValidateWhisperConfig(config);
+            if (!string.IsNullOrEmpty(configError))
+            {
+                return JsonError(HttpStatusCode.ServiceUnavailable, configError);
+            }
+
+            string text;
+            try
+            {
+                text = RunWhisperTranscription(audio.Content, config);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return JsonError(HttpStatusCode.ServiceUnavailable, ex.Message);
+            }
+            return Json(new Dictionary<string, object>
+            {
+                { "text", text },
+                { "language", config.Language }
+            });
+        }
+
+        private static string ValidateVoiceAudio(UploadedFile audio)
+        {
+            if (audio == null || audio.Content == null || audio.Content.Length == 0)
+            {
+                return "Audio de dictee vide.";
+            }
+            if (audio.Content.Length > VoiceAudioMaxBytes)
+            {
+                return "Audio de dictee trop volumineux.";
+            }
+            if (!LooksLikeWav(audio.Content))
+            {
+                return "Format audio de dictee non pris en charge.";
+            }
+            return "";
+        }
+
+        private static bool LooksLikeWav(byte[] content)
+        {
+            return content != null
+                && content.Length > 44
+                && StartsWithAscii(content, 0, "RIFF")
+                && StartsWithAscii(content, 8, "WAVE");
+        }
+
+        private static bool StartsWithAscii(byte[] content, int offset, string value)
+        {
+            if (content == null || value == null || offset < 0 || content.Length < offset + value.Length)
+            {
+                return false;
+            }
+            for (int i = 0; i < value.Length; i++)
+            {
+                if (content[offset + i] != (byte)value[i])
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private WhisperConfig ReadWhisperConfig()
+        {
+            Dictionary<string, object> fileConfig = ReadWhisperConfigFile();
+            string exe = FirstNonEmpty(
+                Environment.GetEnvironmentVariable(WhisperExeEnv),
+                ConfigString(fileConfig, "executablePath"),
+                "integrations/whisper/bin/whisper-cli.exe");
+            string model = FirstNonEmpty(
+                Environment.GetEnvironmentVariable(WhisperModelEnv),
+                ConfigString(fileConfig, "modelPath"),
+                "integrations/whisper/models/ggml-base.bin");
+            string language = FirstNonEmpty(
+                Environment.GetEnvironmentVariable(WhisperLanguageEnv),
+                ConfigString(fileConfig, "language"),
+                "fr");
+            int timeoutSeconds = ClampTimeoutSeconds(FirstNonEmpty(
+                Environment.GetEnvironmentVariable(WhisperTimeoutEnv),
+                ConfigString(fileConfig, "timeoutSeconds"),
+                Convert.ToString(VoiceDefaultTimeoutSeconds)));
+
+            return new WhisperConfig
+            {
+                ExecutablePath = ResolveLocalWhisperPath(exe),
+                ModelPath = ResolveLocalWhisperPath(model),
+                Language = CleanWhisperLanguage(language),
+                TimeoutSeconds = timeoutSeconds
+            };
+        }
+
+        private Dictionary<string, object> ReadWhisperConfigFile()
+        {
+            string configPath = Path.GetFullPath(Path.Combine(_root, "integrations", "whisper", "config.json"));
+            string integrationRoot = Path.GetFullPath(Path.Combine(_root, "integrations", "whisper"));
+            if (!IsPathInsideDirectory(integrationRoot, configPath) || !File.Exists(configPath))
+            {
+                return new Dictionary<string, object>();
+            }
+            try
+            {
+                object parsed = _json.DeserializeObject(File.ReadAllText(configPath, Encoding.UTF8));
+                return parsed as Dictionary<string, object> ?? new Dictionary<string, object>();
+            }
+            catch
+            {
+                return new Dictionary<string, object>();
+            }
+        }
+
+        private string ResolveLocalWhisperPath(string value)
+        {
+            string raw = (value ?? "").Trim().Replace('/', Path.DirectorySeparatorChar);
+            if (raw.Length == 0) return "";
+            raw = Environment.ExpandEnvironmentVariables(raw);
+            string candidate = Path.IsPathRooted(raw)
+                ? Path.GetFullPath(raw)
+                : Path.GetFullPath(Path.Combine(_root, raw));
+            return IsPathInsideDirectory(_root, candidate) ? candidate : "";
+        }
+
+        private static string ValidateWhisperConfig(WhisperConfig config)
+        {
+            if (config == null || string.IsNullOrWhiteSpace(config.ExecutablePath) || !File.Exists(config.ExecutablePath))
+            {
+                return "Dictee vocale non configuree: executable whisper.cpp introuvable.";
+            }
+            if (string.IsNullOrWhiteSpace(config.ModelPath) || !File.Exists(config.ModelPath))
+            {
+                return "Dictee vocale non configuree: modele Whisper introuvable.";
+            }
+            return "";
+        }
+
+        private string RunWhisperTranscription(byte[] audioBytes, WhisperConfig config)
+        {
+            string tempRoot = Path.GetFullPath(Path.Combine(_root, "data", "voice-tmp"));
+            if (!IsPathInsideDirectory(Path.Combine(_root, "data"), tempRoot))
+            {
+                throw new InvalidOperationException("Dossier temporaire de dictee invalide.");
+            }
+            Directory.CreateDirectory(tempRoot);
+
+            string id = GenerateToken(8);
+            string inputPath = Path.Combine(tempRoot, "voice-" + id + ".wav");
+            string outputBase = Path.Combine(tempRoot, "voice-" + id + "-out");
+            string outputTextPath = outputBase + ".txt";
+
+            try
+            {
+                File.WriteAllBytes(inputPath, audioBytes ?? new byte[0]);
+                var start = new ProcessStartInfo
+                {
+                    FileName = config.ExecutablePath,
+                    Arguments = BuildWhisperArguments(config, inputPath, outputBase),
+                    WorkingDirectory = Path.GetDirectoryName(config.ExecutablePath),
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+
+                using (Process process = Process.Start(start))
+                {
+                    if (process == null)
+                    {
+                        throw new InvalidOperationException("Demarrage de whisper.cpp impossible.");
+                    }
+                    if (!process.WaitForExit(Math.Max(1, config.TimeoutSeconds) * 1000))
+                    {
+                        try { process.Kill(); } catch { }
+                        throw new InvalidOperationException("Delai de transcription depasse.");
+                    }
+                    if (process.ExitCode != 0)
+                    {
+                        throw new InvalidOperationException("Transcription vocale impossible.");
+                    }
+                }
+
+                string text = File.Exists(outputTextPath)
+                    ? File.ReadAllText(outputTextPath, Encoding.UTF8)
+                    : "";
+                text = CollapseWhitespace(text);
+                if (text.Length == 0)
+                {
+                    throw new InvalidOperationException("Aucun texte reconnu.");
+                }
+                return text;
+            }
+            finally
+            {
+                TryDeleteLocalFile(inputPath);
+                TryDeleteLocalFile(outputTextPath);
+            }
+        }
+
+        private static string BuildWhisperArguments(WhisperConfig config, string inputPath, string outputBase)
+        {
+            string arguments = "-m " + QuoteArg(config.ModelPath)
+                + " -f " + QuoteArg(inputPath)
+                + " -nt -np -otxt -of " + QuoteArg(outputBase);
+            if (!string.IsNullOrWhiteSpace(config.Language))
+            {
+                arguments += " -l " + QuoteArg(config.Language);
+            }
+            return arguments;
+        }
+
+        private static void TryDeleteLocalFile(string path)
+        {
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private static string ConfigString(Dictionary<string, object> config, string key)
+        {
+            object value;
+            if (config != null && config.TryGetValue(key, out value) && value != null)
+            {
+                return Convert.ToString(value);
+            }
+            return "";
+        }
+
+        private static string FirstNonEmpty(params string[] values)
+        {
+            foreach (string value in values)
+            {
+                if (!string.IsNullOrWhiteSpace(value)) return value.Trim();
+            }
+            return "";
+        }
+
+        private static int ClampTimeoutSeconds(string value)
+        {
+            int parsed;
+            if (!int.TryParse(value, out parsed)) parsed = VoiceDefaultTimeoutSeconds;
+            return Math.Max(5, Math.Min(VoiceMaxTimeoutSeconds, parsed));
+        }
+
+        private static string CleanWhisperLanguage(string value)
+        {
+            string text = (value ?? "").Trim().ToLowerInvariant();
+            if (text == "auto") return "";
+            if (text.Length > 12) return "fr";
+            foreach (char ch in text)
+            {
+                bool ok = (ch >= 'a' && ch <= 'z') || ch == '-' || ch == '_';
+                if (!ok) return "fr";
+            }
+            return text.Length == 0 ? "fr" : text;
         }
 
         private HttpResponse RouteAttachment(HttpRequest request)
@@ -2459,6 +2755,7 @@ namespace KivrioChat
         private const long MaxJsonBodyBytes = 4L * 1024L * 1024L;
         private const long MaxUploadBodyBytes = 30L * 1024L * 1024L;
         private const long MaxWebSearchBodyBytes = 16L * 1024L;
+        private const long MaxVoiceBodyBytes = 12L * 1024L * 1024L;
 
         public string Method;
         public string Target;
@@ -2540,6 +2837,10 @@ namespace KivrioChat
             {
                 return MaxWebSearchBodyBytes;
             }
+            if (string.Equals(path, "/api/voice/transcribe", StringComparison.OrdinalIgnoreCase))
+            {
+                return MaxVoiceBodyBytes;
+            }
             return MaxJsonBodyBytes;
         }
 
@@ -2601,7 +2902,7 @@ namespace KivrioChat
             Headers["X-Frame-Options"] = "DENY";
             Headers["Referrer-Policy"] = "no-referrer";
             Headers["Content-Security-Policy"] = "frame-ancestors 'none'; base-uri 'self'; object-src 'none'";
-            Headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=(), usb=()";
+            Headers["Permissions-Policy"] = "camera=(), microphone=(self), geolocation=(), payment=(), usb=()";
             Headers["Cross-Origin-Opener-Policy"] = "same-origin";
             Headers["Cross-Origin-Resource-Policy"] = "same-origin";
         }

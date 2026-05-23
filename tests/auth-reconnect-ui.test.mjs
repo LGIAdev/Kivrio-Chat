@@ -92,6 +92,7 @@ globalThis.document = {
   getElementById(id) {
     return elements.get(id) || null;
   },
+  addEventListener() {},
 };
 
 const calls = [];

@@ -145,6 +145,15 @@ export async function uploadConversationAttachments(id, files) {
   return Array.isArray(payload?.attachments) ? payload.attachments : [];
 }
 
+export function transcribeVoice(audioBlob) {
+  const form = new FormData();
+  form.append('audio', audioBlob, 'dictation.wav');
+  return request('/api/voice/transcribe', {
+    method: 'POST',
+    body: form,
+  });
+}
+
 export function getAttachmentText(attachment) {
   const textUrl = attachment && typeof attachment === 'object' ? attachment.textUrl : '';
   const id = attachment && typeof attachment === 'object' ? attachment.id : attachment;

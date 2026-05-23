@@ -1,0 +1,6 @@
+{
+  "executablePath": "integrations/whisper/bin/whisper-cli.exe",
+  "modelPath": "integrations/whisper/models/ggml-base.bin",
+  "language": "fr",
+  "timeoutSeconds": 60
+}

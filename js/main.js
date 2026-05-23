@@ -6,6 +6,7 @@ import { wireUserMenu, wirePromptModal, wireSettingsModal } from './ui/menus.js'
 import { wireSendAction, mountStatusPill } from './ui/actions.js';
 import { initAuthGate, wireLogout } from './auth/logout.js';
 import { wireUploads } from './features/uploads.js';
+import { wireVoiceDictation } from './features/voice-dictation.js';
 import { clearChat } from './chat/render.js';
 import { regenerateFromEditedMessage } from './net/ollama.js';
 import('./features/math/katex-init.js')
@@ -368,6 +369,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   mountStatusPill();
   wireLogout();
   wireUploads();
+  wireVoiceDictation();
   wireSidebarResize();
 
   wireNewChatButton();

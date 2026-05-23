@@ -17,6 +17,16 @@ const SERVER_MESSAGE_KEYS = new Map([
   ['Piece jointe introuvable.', 'errors.attachmentNotFound'],
   ['Fichier joint introuvable.', 'errors.fileAttachmentNotFound'],
   ['Les mots de passe ne correspondent pas.', 'auth.passwordMismatch'],
+  ['Aucun audio de dictee recu.', 'voice.audioInvalid'],
+  ['Audio de dictee vide.', 'voice.empty'],
+  ['Audio de dictee trop volumineux.', 'voice.tooLarge'],
+  ['Format audio de dictee non pris en charge.', 'voice.audioInvalid'],
+  ['Dictee vocale non configuree: executable whisper.cpp introuvable.', 'voice.executableMissing'],
+  ['Dictee vocale non configuree: modele Whisper introuvable.', 'voice.modelMissing'],
+  ['Demarrage de whisper.cpp impossible.', 'voice.transcriptionImpossible'],
+  ['Delai de transcription depasse.', 'voice.timeout'],
+  ['Transcription vocale impossible.', 'voice.transcriptionImpossible'],
+  ['Aucun texte reconnu.', 'voice.empty'],
   ['Un traitement est deja en cours.', 'status.inProgress'],
 ]);
 

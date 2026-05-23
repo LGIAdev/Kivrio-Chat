@@ -74,6 +74,15 @@ integrations/searxng/packaging/runtime-manifest.json
 integrations/searxng/**/__pycache__/
 integrations/searxng/**/*.pyc
 
+integrations/whisper/bin/*
+!integrations/whisper/bin/
+!integrations/whisper/bin/.gitkeep
+integrations/whisper/models/*
+!integrations/whisper/models/
+!integrations/whisper/models/.gitkeep
+integrations/whisper/tmp/
+integrations/whisper/config.json
+
 server/lib/*
 !server/lib/.gitkeep
 
