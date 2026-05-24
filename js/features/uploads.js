@@ -292,9 +292,7 @@ export function isWebSearchEnabled() {
 }
 
 export function consumeWebSearchSelection() {
-  const enabled = state.webSearchEnabled;
-  clearWebSearchSelection();
-  return enabled;
+  return state.webSearchEnabled;
 }
 
 export function wireUploads() {

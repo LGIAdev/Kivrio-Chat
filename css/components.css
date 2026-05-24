@@ -548,17 +548,18 @@
 .web-search-indicator{
   display:inline-flex;
   align-items:center;
-  gap:8px;
+  gap:0;
   width:max-content;
   max-width:100%;
   margin-top:10px;
-  padding:6px 8px 6px 10px;
+  padding:6px 10px;
   border:1px solid rgba(96,165,250,.38);
   border-radius:999px;
   background:rgba(59,130,246,.14);
   color:#bfdbfe;
   font-size:.85rem;
   font-weight:600;
+  transition:padding .16s ease, border-color .16s ease, background .16s ease;
 }
 .web-search-indicator[hidden]{
   display:none;
@@ -566,14 +567,32 @@
 .web-search-indicator button{
   display:grid;
   place-items:center;
-  width:22px;
+  width:0;
   height:22px;
   padding:0;
+  margin-left:0;
   border:0;
   border-radius:999px;
   background:transparent;
   color:inherit;
   cursor:pointer;
+  opacity:0;
+  overflow:hidden;
+  pointer-events:none;
+  transform:scale(.84);
+  transition:width .16s ease, margin-left .16s ease, opacity .16s ease, transform .16s ease, background .16s ease;
+}
+.web-search-indicator:hover,
+.web-search-indicator:focus-within{
+  padding-right:8px;
+}
+.web-search-indicator:hover button,
+.web-search-indicator:focus-within button{
+  width:22px;
+  margin-left:8px;
+  opacity:1;
+  pointer-events:auto;
+  transform:scale(1);
 }
 .web-search-indicator button:hover{
   background:rgba(96,165,250,.18);
