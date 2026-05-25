@@ -1131,17 +1131,29 @@ namespace KivrioChat
                 };
                 start.EnvironmentVariables["KIVRIO_SEARXNG_ROOT"] = Path.GetFullPath(Path.Combine(_root, "integrations", "searxng"));
 
-                using (Process process = Process.Start(start))
+                var output = new StringBuilder();
+                var error = new StringBuilder();
+                using (var process = new Process())
                 {
-                    if (process == null) return false;
-                    string output = process.StandardOutput.ReadToEnd();
-                    process.StandardError.ReadToEnd();
+                    process.StartInfo = start;
+                    process.OutputDataReceived += delegate(object sender, DataReceivedEventArgs eventArgs)
+                    {
+                        if (eventArgs.Data != null) output.AppendLine(eventArgs.Data);
+                    };
+                    process.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs eventArgs)
+                    {
+                        if (eventArgs.Data != null) error.AppendLine(eventArgs.Data);
+                    };
+                    if (!process.Start()) return false;
+                    process.BeginOutputReadLine();
+                    process.BeginErrorReadLine();
                     if (!process.WaitForExit(SearxngLauncherTimeoutMs))
                     {
                         try { process.Kill(); } catch { }
                         return false;
                     }
-                    return TryReadLauncherBaseUri(output, out baseUri);
+                    process.WaitForExit();
+                    return TryReadLauncherBaseUri(output.ToString(), out baseUri);
                 }
             }
             catch

@@ -57,7 +57,7 @@ function renderCodeFence(info, body){
 }
 
 function restoreMathToken(token){
-  return typeof token === 'string' ? token : '';
+  return typeof token === 'string' ? escapeHtml(token) : '';
 }
 
 function restoreCodeToken(token){

@@ -830,14 +830,18 @@ export async function sendCurrent() {
     isPdf: item?.kind === 'pdf',
   }));
   let shouldReleaseDetachedUploads = true;
+  let userBubble = null;
+  let userMessagePersisted = false;
+  let composerCleared = false;
 
   isSendInFlight = true;
   setSendButtonBusy(true);
   const streamRequest = beginStreamRequest();
 
   try {
-    const userBubble = renderMsg('user', text, { attachments: localAttachments });
+    userBubble = renderMsg('user', text, { attachments: localAttachments });
     ta.value = '';
+    composerCleared = true;
     const webSearchRequested = consumeWebSearchSelection();
 
     if (window.kivrioEnsureConversationPromise) {
@@ -897,6 +901,7 @@ export async function sendCurrent() {
         attachmentIds: uploadedAttachments.map((item) => item.id),
       });
       bindMessageRecord(userBubble, savedUserMessage);
+      userMessagePersisted = true;
     } catch (_) {
     }
     if (!isCurrentRequest(streamRequest)) return;
@@ -1002,6 +1007,17 @@ export async function sendCurrent() {
   } finally {
     const shouldResetSendState = activeStreamRequest === streamRequest;
     endStreamRequest(streamRequest);
+    if (isRequestAborted(streamRequest) && !userMessagePersisted) {
+      try { userBubble?.closest?.('.msg')?.remove?.(); } catch (_) {}
+      if (detachedUploads.length) {
+        restorePendingUploads(detachedUploads);
+        shouldReleaseDetachedUploads = false;
+      }
+      if (composerCleared && ta && !String(ta.value || '').trim()) {
+        ta.value = text;
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    }
     if (shouldReleaseDetachedUploads) releaseUploadItems(detachedUploads);
     if (shouldResetSendState) {
       isSendInFlight = false;
