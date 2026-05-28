@@ -626,6 +626,31 @@ function renderAssistantChunk(target, payload, options = {}) {
     reasoningText: payload?.reasoningText ?? '',
     reasoningDurationMs: payload?.reasoningDurationMs ?? null,
   });
+  scheduleAssistantAnswerReveal(target, answerText);
+}
+
+function scheduleAssistantAnswerReveal(target, answerText = '') {
+  if (!(target instanceof HTMLElement) || !String(answerText || '').trim()) return;
+  if (target.__kivrioLiveAnswerVisible === true || target.__kivrioAnswerRevealPending) return;
+  target.__kivrioAnswerRevealPending = true;
+  const scheduleFrame = typeof requestAnimationFrame === 'function'
+    ? requestAnimationFrame
+    : (callback) => setTimeout(callback, 0);
+
+  scheduleFrame(() => {
+    target.__kivrioAnswerRevealPending = false;
+    if (!target.isConnected) return;
+
+    const answer = target.querySelector('.assistant-answer');
+    target.__kivrioLiveAnswerVisible = true;
+    if (!answer) return;
+    try {
+      answer.scrollIntoView({
+        block: 'nearest',
+        inline: 'nearest',
+      });
+    } catch (_) {}
+  });
 }
 
 function renderConversationSnapshot(conversation) {
@@ -841,6 +866,7 @@ export async function sendCurrent() {
   try {
     userBubble = renderMsg('user', text, { attachments: localAttachments });
     ta.value = '';
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
     composerCleared = true;
     const webSearchRequested = consumeWebSearchSelection();
 

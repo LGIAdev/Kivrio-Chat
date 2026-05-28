@@ -417,7 +417,7 @@ namespace KivrioChatSecurityTests
                     "{\"query\":\"\"}"));
                 Assert(empty.StatusCode == HttpStatusCode.BadRequest, "empty web search query should be rejected");
 
-                string tooLong = new string('a', 401);
+                string tooLong = new string('a', 801);
                 HttpResponse longQuery = InvokeRouteApi(server, JsonRequest(
                     "POST",
                     "/api/web-search",

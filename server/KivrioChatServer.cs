@@ -556,7 +556,7 @@ namespace KivrioChat
         private const int MaxAuthFailures = 5;
         private const int AuthFailureWindowSeconds = 300;
         private const int AuthLockoutSeconds = 60;
-        private const int WebSearchQueryMaxLength = 400;
+        private const int WebSearchQueryMaxLength = 800;
         private const int WebSearchDefaultMaxResults = 5;
         private const int WebSearchMaxResults = 5;
         private const int WebSearchTimeoutMs = 3000;

@@ -77,6 +77,113 @@
   margin: 0.6em 0;
 }
 
+.kivrio-html-code-card {
+  margin: 0.6em 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #0f172a;
+}
+
+.kivrio-html-code-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(148, 163, 184, .18);
+  background: #111827;
+}
+
+.kivrio-html-code-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: .78rem;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.kivrio-html-code-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #34d399;
+  box-shadow: 0 0 0 3px rgba(52, 211, 153, .14);
+}
+
+.kivrio-html-code-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.kivrio-html-code-action {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  border: 1px solid #334155;
+  border-radius: 7px;
+  background: #162033;
+  color: var(--text);
+  font: inherit;
+  font-size: .78rem;
+  cursor: pointer;
+  transition: background .16s ease, border-color .16s ease, transform .16s ease;
+}
+
+.kivrio-html-code-action.is-primary {
+  background: #1d5fc0;
+  border-color: #3b82f6;
+}
+
+.kivrio-html-code-action:hover,
+.kivrio-html-code-action:focus-visible {
+  background: #1f2a3f;
+  border-color: #52627a;
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.kivrio-html-code-action.is-primary:hover,
+.kivrio-html-code-action.is-primary:focus-visible {
+  background: #256fe0;
+  border-color: #60a5fa;
+}
+
+.kivrio-html-code-action svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+}
+
+.markdown-body .kivrio-html-code-card pre.kivrio-fenced-code {
+  margin: 0;
+  border-radius: 0;
+  border: 0;
+  background: #0f172a;
+}
+
+@media (max-width: 720px) {
+  .kivrio-html-code-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .kivrio-html-code-actions {
+    justify-content: flex-start;
+  }
+}
+
 body.kivrio-image-viewer-open {
   overflow: hidden;
 }

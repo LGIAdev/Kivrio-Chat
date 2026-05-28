@@ -37,6 +37,7 @@ const nodeTests = [
   'tests/error-ux.test.mjs',
   'tests/auth-reconnect-ui.test.mjs',
   'tests/sidebar-search.test.mjs',
+  'tests/html-code-actions-render.test.mjs',
   'tests/ollama-abort.test.mjs',
   'tests/web-search-api.test.mjs',
   'tests/web-search-prompt-injection.test.mjs',

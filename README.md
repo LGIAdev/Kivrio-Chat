@@ -7,12 +7,13 @@ Kivrio Chat is a local chat interface for working with local AI models via [Olla
 It provides a desktop-style web UI with Markdown rendering, file-aware conversations, local session authentication, and a fully local JSON persistence layer.
 
 Status: project under active development.
-Version: Kivrio Chat 2026.5.25.
+Version: Kivrio Chat 2026.5.28.
 
 ---
 
 ## Releases
 
+- [Kivrio Chat 2026.5.28](releases/Kivrio-Chat-2026.5.28.md)
 - [Kivrio Chat 2026.5.25](releases/Kivrio-Chat-2026.5.25.md)
 - [Kivrio Chat 2026.5.23.2](releases/Kivrio-Chat-2026.5.23.2.md)
 - [Kivrio Chat 2026.5.23.1](releases/Kivrio-Chat-2026.5.23.1.md)
@@ -48,6 +49,7 @@ It is separate from Kivrio and Kivrio Agent UI, with its own launcher, local por
 - PDF text extraction for uploaded PDF attachments when local PdfPig libraries are present
 - Local Web Search integration through a managed SearXNG runtime when present
 - Optional local voice dictation through `whisper.cpp` when configured locally
+- HTML code block actions for copying, sandboxed preview, and direct `.html` download
 
 ---
 

@@ -50,9 +50,64 @@ function parseFenceInfo(info){
   return { raw, lang };
 }
 
+function isHtmlCodeFence(parsed, source){
+  const lang = String(parsed?.lang || '').toLowerCase();
+  if (lang === 'html' || lang === 'htm') return true;
+  const trimmed = String(source || '').trimStart().toLowerCase();
+  return trimmed.startsWith('<!doctype html') || trimmed.startsWith('<html');
+}
+
+function htmlCodeActionIcon(action){
+  if (action === 'copy-html') {
+    return ''
+      + '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">'
+      + '<rect x="9" y="9" width="10" height="10" rx="2" stroke="currentColor" stroke-width="1.7"/>'
+      + '<path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>'
+      + '</svg>';
+  }
+  if (action === 'preview-html') {
+    return ''
+      + '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">'
+      + '<path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" stroke="currentColor" stroke-width="1.7"/>'
+      + '<circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.7"/>'
+      + '</svg>';
+  }
+  return ''
+    + '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">'
+    + '<path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>'
+    + '</svg>';
+}
+
+function renderHtmlCodeAction(action, label, primary = false){
+  return ''
+    + `<button type="button" class="kivrio-html-code-action${primary ? ' is-primary' : ''}" data-code-action="${escapeHtmlAttr(action)}" aria-label="${escapeHtmlAttr(label)}" title="${escapeHtmlAttr(label)}">`
+    + htmlCodeActionIcon(action)
+    + `<span>${escapeHtml(label)}</span>`
+    + '</button>';
+}
+
+function renderHtmlCodeFence(parsed, source){
+  const copyLabel = t('chat.copyHtmlAction');
+  const previewLabel = t('chat.previewHtmlAction');
+  const downloadLabel = t('chat.downloadHtmlAction');
+  return ''
+    + `<div class="kivrio-html-code-card" data-code-lang="${escapeHtmlAttr(parsed.lang)}" data-code-info="${escapeHtmlAttr(parsed.raw)}">`
+    + '<div class="kivrio-html-code-toolbar">'
+    + `<span class="kivrio-html-code-label"><span class="kivrio-html-code-dot" aria-hidden="true"></span>${escapeHtml(t('chat.htmlCodeLabel'))}</span>`
+    + '<div class="kivrio-html-code-actions">'
+    + renderHtmlCodeAction('copy-html', copyLabel)
+    + renderHtmlCodeAction('preview-html', previewLabel, true)
+    + renderHtmlCodeAction('download-html', downloadLabel)
+    + '</div>'
+    + '</div>'
+    + `<pre class="kivrio-fenced-code" data-code-lang="${escapeHtmlAttr(parsed.lang)}" data-code-info="${escapeHtmlAttr(parsed.raw)}"><code>${escapeHtml(source)}</code></pre>`
+    + '</div>';
+}
+
 function renderCodeFence(info, body){
   const parsed = parseFenceInfo(info);
   const source = String(body || '').replace(/\n$/, '');
+  if (isHtmlCodeFence(parsed, source)) return renderHtmlCodeFence(parsed, source);
   return `<pre class="kivrio-fenced-code" data-code-lang="${escapeHtmlAttr(parsed.lang)}" data-code-info="${escapeHtmlAttr(parsed.raw)}"><code>${escapeHtml(source)}</code></pre>`;
 }
 
@@ -81,6 +136,106 @@ async function copyTextToClipboard(text){
   area.select();
   document.execCommand('copy');
   document.body.removeChild(area);
+}
+
+function readHtmlCodeSource(card){
+  const code = card?.querySelector?.('pre.kivrio-fenced-code code');
+  return String(code?.textContent || '').trim();
+}
+
+function extractHtmlTitle(source){
+  const match = String(source || '').match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  return match ? match[1].replace(/\s+/g, ' ').trim() : '';
+}
+
+function slugForDownloadName(value){
+  const raw = String(value || '').toLowerCase();
+  const ascii = raw.normalize ? raw.normalize('NFD').replace(/[\u0300-\u036f]/g, '') : raw;
+  return ascii
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60) || 'document';
+}
+
+function htmlDownloadName(source){
+  return `kivrio-${slugForDownloadName(extractHtmlTitle(source))}.html`;
+}
+
+function buildHtmlPreviewPage(source){
+  const html = String(source || '');
+  const title = extractHtmlTitle(html) || t('chat.previewHtmlAction');
+  const downloadName = htmlDownloadName(html);
+  const downloadHref = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+  return ''
+    + '<!doctype html><html lang="fr"><head><meta charset="utf-8">'
+    + `<title>${escapeHtml(title)}</title>`
+    + '<meta name="viewport" content="width=device-width, initial-scale=1">'
+    + '<style>'
+    + 'html,body{height:100%;margin:0;background:#0b0f16;color:#e5e7eb;font-family:Inter,Segoe UI,Arial,sans-serif}'
+    + '.bar{height:48px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 14px;background:#111827;border-bottom:1px solid #273244}'
+    + '.title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700}'
+    + 'a{color:#fff;text-decoration:none;border:1px solid #3b82f6;background:#2563eb;border-radius:8px;padding:7px 10px;font-size:14px}'
+    + 'iframe{display:block;width:100%;height:calc(100% - 49px);border:0;background:#fff}'
+    + '</style></head><body>'
+    + '<div class="bar">'
+    + `<div class="title">${escapeHtml(title)}</div>`
+    + `<a href="${escapeHtmlAttr(downloadHref)}" download="${escapeHtmlAttr(downloadName)}">${escapeHtml(t('chat.downloadHtmlAction'))}</a>`
+    + '</div>'
+    + `<iframe sandbox srcdoc="${escapeHtmlAttr(html)}"></iframe>`
+    + '</body></html>';
+}
+
+function previewHtmlSource(source){
+  const blob = new Blob([buildHtmlPreviewPage(source)], { type: 'text/html;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank', 'noopener,noreferrer');
+  window.setTimeout(() => URL.revokeObjectURL(url), 120000);
+}
+
+function downloadHtmlSource(source){
+  const blob = new Blob([String(source || '')], { type: 'text/html;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = htmlDownloadName(source);
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function handleHtmlCodeAction(event){
+  const button = event.target?.closest?.('.kivrio-html-code-action[data-code-action]');
+  if (!(button instanceof HTMLButtonElement)) return;
+  const card = button.closest('.kivrio-html-code-card');
+  if (!(card instanceof HTMLElement)) return;
+
+  const source = readHtmlCodeSource(card);
+  if (!source) return;
+  event.preventDefault();
+
+  const action = button.dataset.codeAction;
+  try {
+    if (action === 'copy-html') {
+      await copyTextToClipboard(source);
+      showCopyToast(t('chat.htmlCopied'));
+      return;
+    }
+    if (action === 'preview-html') {
+      previewHtmlSource(source);
+      return;
+    }
+    if (action === 'download-html') {
+      downloadHtmlSource(source);
+      showCopyToast(t('chat.htmlDownloadReady'));
+    }
+  } catch (_) {
+    showCopyToast(t('common.failure'));
+  }
+}
+
+if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+  document.addEventListener('click', handleHtmlCodeAction);
 }
 
 function cloneAttachments(attachments){
